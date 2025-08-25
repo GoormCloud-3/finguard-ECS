@@ -1,20 +1,20 @@
 {
-  "family": "user-task",
+  "family": "account-task",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "512",
   "memory": "1024",
-  "executionRoleArn": "arn:aws:iam::381492026475:role/ecsTaskExecutionRole",
-  "taskRoleArn": "arn:aws:iam::381492026475:role/ecsTaskExecutionRole",
+  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
   "containerDefinitions": [
     {
-      "name": "user-service",
-      "image": "381492026475.dkr.ecr.ap-northeast-2.amazonaws.com/user-service:latest",
+      "name": "account-service",
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/account-service:${IMAGE_TAG}",
       "essential": true,
       "environment": [
         { "name": "AWS_XRAY_DAEMON_ADDRESS", "value": "127.0.0.1:2000" },
         { "name": "AWS_XRAY_CONTEXT_MISSING", "value": "LOG_ERROR" },
-        { "name": "AWS_DEFAULT_REGION", "value": "ap-northeast-2" }
+        { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" }
       ],
       "portMappings": [
         {
@@ -25,8 +25,8 @@
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/user-service",
-          "awslogs-region": "ap-northeast-2",
+          "awslogs-group": "/ecs/account-service",
+          "awslogs-region": "${AWS_REGION}",
           "awslogs-stream-prefix": "ecs",
           "awslogs-create-group": "true"
         }
@@ -44,14 +44,14 @@
     },
     {
       "name": "xray-daemon",
-      "image": "381492026475.dkr.ecr.ap-northeast-2.amazonaws.com/xray-daemon:3.x",
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/xray-daemon:3.x",
       "essential": false,
       "command": ["-o"], 
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/xray-daemon",
-          "awslogs-region": "ap-northeast-2",
+          "awslogs-region": "${AWS_REGION}",
           "awslogs-stream-prefix": "ecs",
           "awslogs-create-group": "true"
         }
@@ -61,7 +61,7 @@
         { "containerPort": 2000, "protocol": "tcp" }
       ],
       "environment": [
-        { "name": "AWS_REGION", "value": "ap-northeast-2" }
+        { "name": "AWS_REGION", "value": "${AWS_REGION}" }
       ]
     }
   ]
