@@ -1,4 +1,4 @@
-name: Destroy ECS & ECR Resources (Safe)
+name: ECS Destroy
 
 on:
   workflow_dispatch:

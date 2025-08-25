@@ -1,4 +1,4 @@
-name: ECS Secure Deploy
+name: ECS Deploy
 
 on:
   workflow_dispatch:
