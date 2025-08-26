@@ -39,12 +39,28 @@ jobs:
       - name: Mask account id
         run: echo "::add-mask::${AWS_ACCOUNT_ID}"
 
+            # (A) 혹시 남아있는 키/세션 제거
+      - name: Clear any leftover AWS credentials
+        run: |
+          unset AWS_ACCESS_KEY_ID || true
+          unset AWS_SECRET_ACCESS_KEY || true
+          unset AWS_SESSION_TOKEN || true
+          unset AWS_PROFILE || true  
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/ecs-destroy-role
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubECSDestroySession
+            # (C) 지금 내가 누구인지 확인 (반드시 ecs-destroy-role로 찍혀야 정상)
+      - name: Who am I? (Caller identity)
+        run: |
+          set -euo pipefail
+          echo "Caller identity:"
+          aws sts get-caller-identity
+          echo "Caller ARN:"
+          aws sts get-caller-identity --query Arn --output text
 
       - name: Ensure tools
         run: |
