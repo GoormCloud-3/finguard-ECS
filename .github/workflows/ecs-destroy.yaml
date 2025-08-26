@@ -71,11 +71,11 @@ jobs:
 
               echo "⏳ Waiting for tasks to stop: $svc"
               for i in $(seq 1 30); do
-                TASK_ARNS=$(aws ecs list-tasks \
-                  --cluster "$CLUSTER_NAME" --service-name "$svc" \
-                  --desired-status RUNNING --region "$AWS_REGION" \
-                  --query "taskArns[]" --output text)
-                if [ -z "$TASK_ARNS" ] || [ "$TASK_ARNS" = "None" ]; then
+                RUNNING=$(aws ecs describe-services \
+                  --cluster "$CLUSTER_NAME" --services "$svc" \
+                  --region "$AWS_REGION" \
+                  --query 'services[0].runningCount' --output text 2>/dev/null || echo 0)
+                if [ "$RUNNING" = "0" ] || [ "$RUNNING" = "None" ] || [ -z "$RUNNING" ]; then
                   break
                 fi
                 sleep 10
@@ -86,6 +86,7 @@ jobs:
                 --cluster "$CLUSTER_NAME" --service "$svc" \
                 --force --region "$AWS_REGION" >/dev/null || true
 
+              # 사라질 때까지 대기
               for i in $(seq 1 18); do
                 OUT=$(aws ecs describe-services \
                   --cluster "$CLUSTER_NAME" --services "$svc" \
