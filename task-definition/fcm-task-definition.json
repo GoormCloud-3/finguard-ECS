@@ -1,0 +1,60 @@
+{
+  "family": "finguard-fcm-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "3072",
+  "taskRoleArn": "arn:aws:iam::381492026475:role/ecsFCMTaskExecutionRole",
+  "executionRoleArn": "arn:aws:iam::381492026475:role/ecsFCMTaskExecutionRole",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "containerDefinitions": [
+    {
+      "name": "fcm-worker",
+      "image": "381492026475.dkr.ecr.ap-northeast-2.amazonaws.com/finguard/fcm-python-image:latest",
+      "essential": true,
+      "environment": [
+        { "name": "AWS_REGION", "value": "ap-northeast-2" },
+        { "name": "QUEUE_URL", "value": "https://sqs.ap-northeast-2.amazonaws.com/381492026475/fcm-push-trade-queue" },
+        { "name": "XRAY_SERVICE_NAME", "value": "fcm-worker" },
+        { "name": "AWS_XRAY_DAEMON_ADDRESS", "value": "127.0.0.1:2000" },
+        { "name": "LOG_LEVEL", "value": "INFO" },
+        { "name": "FIREBASE_SA_PARAM", "value": "/prod/firebase-service-account-json" }
+      ],
+      "dependsOn": [
+        { "containerName": "xray-daemon", "condition": "START" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/finguard/ecs-b-worker",
+          "awslogs-region": "ap-northeast-2",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      }
+    },
+    {
+      "name": "xray-daemon",
+      "image": "381492026475.dkr.ecr.ap-northeast-2.amazonaws.com/xray-daemon",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 2000, "protocol": "udp" }
+      ],
+      "environment": [
+        { "name": "AWS_REGION", "value": "ap-northeast-2" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/finguard/ecs-b-worker",
+          "awslogs-region": "ap-northeast-2",
+          "awslogs-stream-prefix": "xray",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}
