@@ -134,19 +134,24 @@ jobs:
       - name: Create or Update ECS Services (private subnets only)
         run: |
           set -Eeuo pipefail
-          IFS=',' read -ra SUBNET_ARRAY <<< "$AWS_SUBNETS"
-          IFS=',' read -ra SG_ARRAY <<< "$AWS_SECURITY_GROUPS"
 
           NET_CONFIG=$(jq -n \
-            --argjson subnets "$(printf '%s\n' "${SUBNET_ARRAY[@]}" | jq -R . | jq -s .)" \
-            --argjson sgs     "$(printf '%s\n' "${SG_ARRAY[@]}"   | jq -R . | jq -s .)" \
-            '{awsvpcConfiguration: {subnets: $subnets, securityGroups: $sgs, assignPublicIp: "DISABLED"}}')
+            --arg subs "$AWS_SUBNETS" \
+            --arg sgs  "$AWS_SECURITY_GROUPS" \
+            '{
+              awsvpcConfiguration: {
+                subnets: ($subs | split("[,\\s]+") | map(select(length>0))),
+                securityGroups: ($sgs | split("[,\\s]+") | map(select(length>0))),
+                assignPublicIp: "DISABLED"
+              }  
+            }')
 
           IFS=',' read -ra services <<< "$SERVICES"
           for svc in "${services[@]}"; do
             TASK_DEF_NAME="${svc%-service}-task"
             STATUS=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$svc" --query "services[0].status" --output text 2>/dev/null || echo "NONE")
             if [ "$STATUS" = "ACTIVE" ]; then
+              LATEST_TD=$(aws ecs describe-task-definition --task-definition "$TASK_DEF_NAME" --query "taskDefinition.taskDefinitionArn" --output text)
               aws ecs update-service \
                 --cluster "$CLUSTER_NAME" \
                 --service "$svc" \
