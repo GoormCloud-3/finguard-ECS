@@ -145,6 +145,11 @@ jobs:
                 assignPublicIp: "DISABLED"
               }  
             }')
+          
+          echo "AWS_SUBNETS=$AWS_SUBNETS"
+          echo "AWS_SECURITY_GROUPS=$AWS_SECURITY_GROUPS"
+          echo "NET_CONFIG:"
+          echo "$NET_CONFIG" | jq .
 
           IFS=',' read -ra services <<< "$SERVICES"
           for svc in "${services[@]}"; do
