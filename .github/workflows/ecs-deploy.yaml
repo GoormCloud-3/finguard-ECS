@@ -140,10 +140,10 @@ jobs:
             --arg sgs  "$AWS_SECURITY_GROUPS" \
             '{
               awsvpcConfiguration: {
-                subnets: ($subs | split("[,\\s]+") | map(select(length>0))),
-                securityGroups: ($sgs | split("[,\\s]+") | map(select(length>0))),
+                subnets: ($subs | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(length>0))),
+                securityGroups: ($sgs | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(length>0))),
                 assignPublicIp: "DISABLED"
-              }  
+              }
             }')
           
           echo "AWS_SUBNETS=$AWS_SUBNETS"
