@@ -13,7 +13,7 @@
   "containerDefinitions": [
     {
       "name": "fcm-worker",
-      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com//fcm-service:${IMAGE_TAG}",
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/fcm-service:${IMAGE_TAG}",
       "essential": true,
       "environment": [
         { "name": "AWS_REGION", "value": "${AWS_REGION}" },
