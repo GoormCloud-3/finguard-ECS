@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import logging
 import signal
 import time
@@ -7,9 +8,7 @@ import boto3
 from firebase_admin import credentials, initialize_app, messaging
 from aws_xray_sdk.core import xray_recorder, patcher
 
-# -------------------------
-# Logging
-# -------------------------
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -18,9 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# -------------------------
-# Graceful shutdown
-# -------------------------
+
 _SHOULD_STOP = False
 def _handle_sigterm(signum, frame):
     global _SHOULD_STOP
@@ -34,9 +31,9 @@ SERVICE_NAME = os.environ.get("XRAY_SERVICE_NAME", "fcm-worker")
 xray_recorder.configure(
     service=SERVICE_NAME,
     daemon_address=os.getenv("AWS_XRAY_DAEMON_ADDRESS", "127.0.0.1:2000"),
-    context_missing="IGNORE_ERROR",  
+    context_missing="IGNORE_ERROR",
 )
-patcher.patch(["boto3"])  
+patcher.patch(["boto3"])
 
 
 REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
@@ -48,20 +45,104 @@ sqs = boto3.client("sqs", region_name=REGION)
 logger.info(f"SQS endpoint in use: {sqs.meta.endpoint_url}")
 
 
-sa_env = os.environ.get("FIREBASE_SA_JSON")
+
+def _parse_json_or_b64(value: str) -> dict:
+    """
+    value가 (1) RAW JSON이거나 (2) base64(JSON)일 때 dict로 반환
+    """
+    
+    try:
+        return json.loads(value)
+    except Exception:
+        pass
+
+    
+    try:
+        decoded = base64.b64decode(value).decode("utf-8")
+        return json.loads(decoded)
+    except Exception as e:
+        raise RuntimeError("서비스 계정 값 파싱 실패: RAW JSON 또는 base64(JSON) 형식이어야 합니다.") from e
+
+
+def _load_firebase_sa_from_env() -> tuple[dict | None, str | None]:
+    """
+    환경변수 FIREBASE_SA_JSON에서 서비스 계정 로드
+    """
+    sa_env = os.environ.get("FIREBASE_SA_JSON")
+    if not sa_env:
+        return None, None
+    sa_dict = _parse_json_or_b64(sa_env)
+    return sa_dict, "env:FIREBASE_SA_JSON"
+
+
+def _load_firebase_sa_from_ssm() -> tuple[dict | None, str | None]:
+    """
+    SSM Parameter Store에서 서비스 계정 로드
+    기본값: arn:aws:ssm:ap-northeast-2:381492026475:parameter/prod/firebase-service-account-json
+    """
+    name_or_arn = os.environ.get(
+        "SSM_PARAM_ARN",
+        "arn:aws:ssm:ap-northeast-2:381492026475:parameter/prod/firebase-service-account-json",
+    )
+    try:
+        ssm = boto3.client("ssm", region_name=REGION)
+        resp = ssm.get_parameter(Name=name_or_arn, WithDecryption=True)
+        value = resp["Parameter"]["Value"]
+        sa_dict = _parse_json_or_b64(value)
+        return sa_dict, f"ssm:{name_or_arn}"
+    except Exception as e:
+        logger.warning(f"SSM에서 Firebase SA 로드 실패: {e}")
+        return None, None
+
+
+def _load_firebase_sa_from_file() -> tuple[dict | None, str | None]:
+    """
+    로컬 파일(개발용 fallback)에서 서비스 계정 로드
+    """
+    path = os.environ.get("FIREBASE_CRED_FILE", "service-account-key.json")
+    if not os.path.exists(path):
+        return None, None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            sa_dict = json.load(f)
+        return sa_dict, f"file:{path}"
+    except Exception as e:
+        logger.warning(f"로컬 파일에서 Firebase SA 로드 실패: {e}")
+        return None, None
+
+
+def _init_firebase_admin():
+    """
+    우선순위: ENV -> SSM -> FILE
+    """
+    loaders = [
+        _load_firebase_sa_from_env,
+        _load_firebase_sa_from_ssm,
+        _load_firebase_sa_from_file,
+    ]
+    last_err = None
+    for loader in loaders:
+        try:
+            sa, src = loader()
+            if sa:
+                cred = credentials.Certificate(sa)  
+                initialize_app(cred)
+                logger.info(f"🔐 Firebase initialized from {src}.")
+                return
+        except Exception as e:
+            last_err = e
+            logger.warning(f"Firebase 자격증명 로드 실패 ({loader.__name__}): {e}")
+
+    
+    raise RuntimeError(
+        f"Firebase 초기화 실패: ENV/SSM/FILE 어느 경로에서도 서비스 계정을 로드하지 못했습니다. "
+        f"마지막 오류: {last_err}"
+    )
+
+
+
 try:
-    if sa_env:
-        
-        sa_dict = json.loads(sa_env)
-        cred = credentials.Certificate(sa_dict)
-        initialize_app(cred)
-        logger.info("🔐 Firebase initialized from FIREBASE_SA_JSON env (SSM).")
-    else:
-        
-        FIREBASE_CRED_FILE = os.environ.get("FIREBASE_CRED_FILE", "service-account-key.json")
-        cred = credentials.Certificate(FIREBASE_CRED_FILE)
-        initialize_app(cred)
-        logger.info(f"📄 Firebase initialized from file path: {FIREBASE_CRED_FILE}")
+    _init_firebase_admin()
 except Exception as e:
     logger.error(f"Firebase 초기화 실패: {e}")
     raise
@@ -74,6 +155,7 @@ def mask_token(token: str | None) -> str | None:
         return "***"
     return f"{token[:4]}***{token[-4:]}"
 
+
 def parse_payload(body_str: str) -> dict:
     try:
         outer = json.loads(body_str)
@@ -84,6 +166,7 @@ def parse_payload(body_str: str) -> dict:
     except Exception as e:
         logger.error(f"Payload 파싱 실패: {e}")
         return {}
+
 
 def build_fcm_parts(payload: dict) -> dict:
     data = None
@@ -97,6 +180,7 @@ def build_fcm_parts(payload: dict) -> dict:
         "data": data
     }
 
+
 def _xray_add_exception(e: Exception):
     try:
         sub = xray_recorder.current_subsegment()
@@ -104,6 +188,7 @@ def _xray_add_exception(e: Exception):
             sub.add_exception(e, stack=True)
     except Exception:
         pass
+
 
 def poll_sqs_once() -> int:
     processed = 0
@@ -143,7 +228,6 @@ def poll_sqs_once() -> int:
                 sub.put_metadata("payload_meta", meta)
 
             single_token = payload.get("token") or payload.get("fcmToken")
-            
             masked_single = mask_token(single_token)
 
             logger.info(
