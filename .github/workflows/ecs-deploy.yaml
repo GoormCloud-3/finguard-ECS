@@ -41,12 +41,22 @@ jobs:
           sudo apt-get install -y jq gettext-base  # envsubst 제공 패키지
           echo "::add-mask::${AWS_ACCOUNT_ID}"
 
-      - name: Ensure ECS Cluster Exists
+      - name: Ensure ECS Cluster Exists (robust)
         run: |
           set -Eeuo pipefail
-          aws ecs describe-clusters --clusters "$CLUSTER_NAME" --region "$AWS_REGION" \
-            --query "clusters[0].status" --output text >/dev/null 2>&1 || \
-          aws ecs create-cluster --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION"
+          export AWS_DEFAULT_REGION="${AWS_REGION}"
+
+          ARN=$(aws ecs describe-clusters \
+            --clusters "$CLUSTER_NAME" \
+            --query 'clusters[0].clusterArn' \
+            --output text 2>/dev/null || echo "None")
+
+          if [ "$ARN" = "None" ] || [ -z "$ARN" ] || [ "$ARN" = "null" ]; then
+            echo "ECS cluster not found. Creating: $CLUSTER_NAME in $AWS_REGION"
+            aws ecs create-cluster --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null
+          else
+            echo "ECS cluster exists: $ARN"
+          fi
 
 
       - name: Login to Amazon ECR
@@ -108,7 +118,7 @@ jobs:
           ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}:${IMAGE_TAG}"
           aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1 || \
           aws ecr create-repository --repository-name "$REPO_NAME"
-          
+
           # 이미지 존재 여부 확인
           IMAGE_EXISTS=$(aws ecr describe-images --repository-name "$REPO_NAME" --image-ids imageTag="$IMAGE_TAG" --query 'length(imageDetails)' --output text 2>/dev/null || echo 0)
 
@@ -162,17 +172,19 @@ jobs:
           IFS=',' read -ra services <<< "$SERVICES"
           for svc in "${services[@]}"; do
             TASK_DEF_NAME="${svc%-service}-task"
-            STATUS=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$svc" --query "services[0].status" --output text 2>/dev/null || echo "NONE")
+            STATUS=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$svc" --region "$AWS_REGION" --query "services[0].status" --output text 2>/dev/null || echo "NONE")
             if [ "$STATUS" = "ACTIVE" ]; then
-              LATEST_TD=$(aws ecs describe-task-definition --task-definition "$TASK_DEF_NAME" --query "taskDefinition.taskDefinitionArn" --output text)
+              LATEST_TD=$(aws ecs describe-task-definition --task-definition "$TASK_DEF_NAME" --region "$AWS_REGION" --query "taskDefinition.taskDefinitionArn" --output text)
               aws ecs update-service \
                 --cluster "$CLUSTER_NAME" \
+                --region "$AWS_REGION" \
                 --service "$svc" \
                 --task-definition "$TASK_DEF_NAME" \
                 --force-new-deployment
             else
               aws ecs create-service \
                 --cluster "$CLUSTER_NAME" \
+                --region "$AWS_REGION" \
                 --service-name "$svc" \
                 --task-definition "$TASK_DEF_NAME" \
                 --desired-count 1 \
