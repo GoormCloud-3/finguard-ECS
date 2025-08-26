@@ -8,8 +8,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-COPY service-account-key.json ./service-account-key.json
-
 COPY worker.py ./worker.py
 
 ENV AWS_REGION=ap-northeast-2
