@@ -22,6 +22,11 @@
         { "name": "AWS_XRAY_DAEMON_ADDRESS", "value": "127.0.0.1:2000" },
         { "name": "LOG_LEVEL", "value": "INFO" },
         { "name": "FIREBASE_SA_PARAM", "value": "/prod/firebase-service-account-json" }
+      ],"secrets": [
+        {
+          "name": "FIREBASE_SA_JSON",
+          "valueFrom": "arn:aws:ssm:ap-northeast-2:381492026475:parameter/prod/firebase-service-account-json"
+        }
       ],
       "dependsOn": [
         { "containerName": "xray-daemon", "condition": "START" }

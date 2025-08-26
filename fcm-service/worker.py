@@ -7,7 +7,9 @@ import boto3
 from firebase_admin import credentials, initialize_app, messaging
 from aws_xray_sdk.core import xray_recorder, patcher
 
-
+# -------------------------
+# Logging
+# -------------------------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -16,7 +18,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
+# -------------------------
+# Graceful shutdown
+# -------------------------
 _SHOULD_STOP = False
 def _handle_sigterm(signum, frame):
     global _SHOULD_STOP
@@ -30,9 +34,9 @@ SERVICE_NAME = os.environ.get("XRAY_SERVICE_NAME", "fcm-worker")
 xray_recorder.configure(
     service=SERVICE_NAME,
     daemon_address=os.getenv("AWS_XRAY_DAEMON_ADDRESS", "127.0.0.1:2000"),
-    context_missing='IGNORE_ERROR',
+    context_missing="IGNORE_ERROR",  
 )
-patcher.patch(['boto3'])
+patcher.patch(["boto3"])  
 
 
 REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
@@ -43,9 +47,24 @@ QUEUE_URL = os.environ.get(
 sqs = boto3.client("sqs", region_name=REGION)
 logger.info(f"SQS endpoint in use: {sqs.meta.endpoint_url}")
 
-FIREBASE_CRED_FILE = os.environ.get("FIREBASE_CRED_FILE", "service-account-key.json")
-cred = credentials.Certificate(FIREBASE_CRED_FILE)
-initialize_app(cred)
+
+sa_env = os.environ.get("FIREBASE_SA_JSON")
+try:
+    if sa_env:
+        
+        sa_dict = json.loads(sa_env)
+        cred = credentials.Certificate(sa_dict)
+        initialize_app(cred)
+        logger.info("🔐 Firebase initialized from FIREBASE_SA_JSON env (SSM).")
+    else:
+        
+        FIREBASE_CRED_FILE = os.environ.get("FIREBASE_CRED_FILE", "service-account-key.json")
+        cred = credentials.Certificate(FIREBASE_CRED_FILE)
+        initialize_app(cred)
+        logger.info(f"📄 Firebase initialized from file path: {FIREBASE_CRED_FILE}")
+except Exception as e:
+    logger.error(f"Firebase 초기화 실패: {e}")
+    raise
 
 
 def mask_token(token: str | None) -> str | None:
@@ -86,7 +105,6 @@ def _xray_add_exception(e: Exception):
     except Exception:
         pass
 
-
 def poll_sqs_once() -> int:
     processed = 0
     xray_recorder.begin_segment(name="poll_sqs_once")
@@ -112,10 +130,10 @@ def poll_sqs_once() -> int:
         return processed
 
     for msg in res["Messages"]:
-        payload = {}
-        trace_id = None
+        payload: dict = {}
+        trace_id: str | None = None
         try:
-            logger.info(f"📥 SQS 메시지 원본 수신 (msgId={msg['MessageId']})")
+            logger.info(f"📥 SQS 메시지 원본 수신 (msgId={msg.get('MessageId')})")
 
             with xray_recorder.in_subsegment("parse_payload") as sub:
                 payload = parse_payload(msg.get("Body", "{}"))
@@ -125,18 +143,17 @@ def poll_sqs_once() -> int:
                 sub.put_metadata("payload_meta", meta)
 
             single_token = payload.get("token") or payload.get("fcmToken")
-            tokens = payload.get("fcmTokens") if isinstance(payload.get("fcmTokens"), list) else None
+            
             masked_single = mask_token(single_token)
-            masked_tokens = [mask_token(t) for t in tokens] if tokens else None
 
             logger.info(
                 f"🧾 traceId={trace_id}, token={masked_single}, "
-                f"tokens={masked_tokens}, topic={payload.get('topic')}, condition={payload.get('condition')}"
+                f"topic={payload.get('topic')}, condition={payload.get('condition')}"
             )
 
             msg_kwargs = build_fcm_parts(payload)
 
-            if single_token and not tokens:
+            if single_token:
                 with xray_recorder.in_subsegment("fcm_send_single") as sub:
                     sub.put_annotation("traceId", trace_id or "none")
                     sub.put_annotation("mode", "single")
@@ -145,22 +162,6 @@ def poll_sqs_once() -> int:
                     logger.info(f"➡️ FCM 단일 전송 시작 (traceId={trace_id}, token={masked_single})")
                     messaging.send(message)
                     logger.info(f"✅ 단일 푸시 성공 (traceId={trace_id}, token={masked_single})")
-
-            elif not single_token and tokens:
-                with xray_recorder.in_subsegment("fcm_send_each_for_multicast") as sub:
-                    sub.put_annotation("traceId", trace_id or "none")
-                    sub.put_annotation("mode", "multicast")
-                    sub.put_metadata("tokens_masked", masked_tokens)
-                    logger.info(f"➡️ FCM 멀티캐스트 시작 (traceId={trace_id}, tokens={len(tokens)})")
-                    mmsg = messaging.MulticastMessage(**msg_kwargs, tokens=tokens)
-                    resp = messaging.send_each_for_multicast(mmsg)  # v7 권장 API
-                    success = sum(1 for r in resp.responses if r.success)
-                    failure = len(resp.responses) - success
-                    logger.info(f"✅ 멀티캐스트 완료 (traceId={trace_id}, 성공={success}, 실패={failure})")
-                    if failure:
-                        errors = [r.exception for r in resp.responses if not r.success][:3]
-                        logger.warning(f"⚠️ 일부 실패 (traceId={trace_id}, 예시={errors})")
-                        sub.put_metadata("fail_examples", [str(e) for e in errors if e])
 
             elif payload.get("topic"):
                 with xray_recorder.in_subsegment("fcm_send_topic") as sub:
@@ -183,12 +184,12 @@ def poll_sqs_once() -> int:
                     logger.info(f"✅ 조건 푸시 성공 (traceId={trace_id}, condition={payload['condition']})")
 
             else:
-                raise ValueError("Invalid payload: token | fcmTokens | topic | condition 중 하나는 필요")
+                raise ValueError("Invalid payload: token | topic | condition 중 하나는 필요")
 
             with xray_recorder.in_subsegment("sqs_delete") as sub:
                 sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=msg["ReceiptHandle"])
                 sub.put_annotation("traceId", trace_id or "none")
-                logger.info(f"🗑️ SQS 메시지 삭제 완료 (traceId={trace_id}, msgId={msg['MessageId']})")
+                logger.info(f"🗑️ SQS 메시지 삭제 완료 (traceId={trace_id}, msgId={msg.get('MessageId')})")
 
             processed += 1
 
