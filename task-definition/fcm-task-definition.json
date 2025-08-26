@@ -1,5 +1,5 @@
 {
-  "family": "finguard-fcm-task",
+  "family": "fcm-task",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
@@ -13,7 +13,7 @@
   "containerDefinitions": [
     {
       "name": "fcm-worker",
-      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/finguard/fcm-python-image:${IMAGE_TAG}",
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com//fcm-service:${IMAGE_TAG}",
       "essential": true,
       "environment": [
         { "name": "AWS_REGION", "value": "${AWS_REGION}" },
@@ -43,7 +43,7 @@
     },
     {
       "name": "xray-daemon",
-      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/xray-daemon",
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/xray-daemon:3.x",
       "essential": true,
       "portMappings": [
         { "containerPort": 2000, "protocol": "udp" }
