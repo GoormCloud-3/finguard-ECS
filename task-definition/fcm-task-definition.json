@@ -4,8 +4,8 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
   "memory": "3072",
-  "taskRoleArn": "arn:aws:iam::381492026475:role/ecsFCMTaskExecutionRole",
-  "executionRoleArn": "arn:aws:iam::381492026475:role/ecsFCMTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsFCMTaskExecutionRole",
+  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsFCMTaskExecutionRole",
   "runtimePlatform": {
     "cpuArchitecture": "X86_64",
     "operatingSystemFamily": "LINUX"
@@ -13,11 +13,11 @@
   "containerDefinitions": [
     {
       "name": "fcm-worker",
-      "image": "381492026475.dkr.ecr.ap-northeast-2.amazonaws.com/finguard/fcm-python-image:latest",
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/finguard/fcm-python-image:${IMAGE_TAG}",
       "essential": true,
       "environment": [
-        { "name": "AWS_REGION", "value": "ap-northeast-2" },
-        { "name": "QUEUE_URL", "value": "https://sqs.ap-northeast-2.amazonaws.com/381492026475/fcm-push-trade-queue" },
+        { "name": "AWS_REGION", "value": "${AWS_REGION}" },
+        { "name": "QUEUE_URL", "value": "https://sqs.${AWS_REGION}.amazonaws.com/${AWS_ACCOUNT_ID}/fcm-push-trade-queue" },
         { "name": "XRAY_SERVICE_NAME", "value": "fcm-worker" },
         { "name": "AWS_XRAY_DAEMON_ADDRESS", "value": "127.0.0.1:2000" },
         { "name": "LOG_LEVEL", "value": "INFO" },
@@ -25,7 +25,7 @@
       ],"secrets": [
         {
           "name": "FIREBASE_SA_JSON",
-          "valueFrom": "arn:aws:ssm:ap-northeast-2:381492026475:parameter/prod/firebase-service-account-json"
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/prod/firebase-service-account-json"
         }
       ],
       "dependsOn": [
@@ -35,7 +35,7 @@
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/finguard/ecs-b-worker",
-          "awslogs-region": "ap-northeast-2",
+          "awslogs-region": "${AWS_REGION}",
           "awslogs-stream-prefix": "ecs",
           "awslogs-create-group": "true"
         }
@@ -43,19 +43,19 @@
     },
     {
       "name": "xray-daemon",
-      "image": "381492026475.dkr.ecr.ap-northeast-2.amazonaws.com/xray-daemon",
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/xray-daemon",
       "essential": true,
       "portMappings": [
         { "containerPort": 2000, "protocol": "udp" }
       ],
       "environment": [
-        { "name": "AWS_REGION", "value": "ap-northeast-2" }
+        { "name": "AWS_REGION", "value": "${AWS_REGION}" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/finguard/ecs-b-worker",
-          "awslogs-region": "ap-northeast-2",
+          "awslogs-region": "${AWS_REGION}",
           "awslogs-stream-prefix": "xray",
           "awslogs-create-group": "true"
         }
