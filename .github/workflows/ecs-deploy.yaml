@@ -46,17 +46,37 @@ jobs:
           set -Eeuo pipefail
           export AWS_DEFAULT_REGION="${AWS_REGION}"
 
-          ARN=$(aws ecs describe-clusters \
+          # 현재 상태 조회 (없으면 MISSING)
+          STATUS=$(aws ecs describe-clusters \
             --clusters "$CLUSTER_NAME" \
-            --query 'clusters[0].clusterArn' \
-            --output text 2>/dev/null || echo "None")
+            --query 'clusters[0].status' \
+            --output text 2>/dev/null || echo "MISSING")
+          echo "Current ECS cluster status: ${STATUS}"
 
-          if [ "$ARN" = "None" ] || [ -z "$ARN" ] || [ "$ARN" = "null" ]; then
-            echo "ECS cluster not found. Creating: $CLUSTER_NAME in $AWS_REGION"
-            aws ecs create-cluster --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null
-          else
-            echo "ECS cluster exists: $ARN"
+          if [ "$STATUS" = "MISSING" ] || [ "$STATUS" = "INACTIVE" ] || [ "$STATUS" = "None" ] || [ "$STATUS" = "null" ]; then
+            echo "Creating ECS cluster: $CLUSTER_NAME ($AWS_REGION)"
+            aws ecs create-cluster --cluster-name "$CLUSTER_NAME" >/dev/null
+          fi      
+
+          # ACTIVE 될 때까지 대기 (최대 ~150초)
+          for i in {1..30}; do
+            STATUS=$(aws ecs describe-clusters \
+              --clusters "$CLUSTER_NAME" \
+              --query 'clusters[0].status' \
+              --output text 2>/dev/null || echo "MISSING")
+            echo "Wait ECS cluster status: ${STATUS}"
+            if [ "$STATUS" = "ACTIVE" ]; then
+              echo "ECS cluster is ACTIVE."
+              break      
+            fi
+            sleep 5
+          done
+
+          if [ "$STATUS" != "ACTIVE" ]; then
+            echo "❌ ECS cluster is not ACTIVE after waiting. Abort."
+            exit 1
           fi
+
 
 
       - name: Login to Amazon ECR
