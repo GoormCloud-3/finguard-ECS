@@ -26,9 +26,12 @@ extensions:
   health_check: {}
 
 service:
+  telemetry:
+    logs:
+      level: warn
   extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, resourcedetection, batch]
-      exporters: [awsxray, debug]
+      exporters: [awsxray]
