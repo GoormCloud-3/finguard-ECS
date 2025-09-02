@@ -18,7 +18,14 @@
         { "name": "OTEL_PROPAGATORS", "value": "xray" },
         { "name": "OTEL_TRACES_SAMPLER", "value": "parentbased_always_on" },
         { "name": "OTEL_RESOURCE_ATTRIBUTES", "value": "service.name=fcm-service,service.namespace=finguard" },
-        { "name": "AWS_REGION", "value": "${AWS_REGION}" }
+        { "name": "AWS_REGION", "value": "${AWS_REGION}" },
+        { "name": "FIREBASE_SA_PARAM", "value": "/prod/firebase-service-account-json" }
+      ],
+      "secrets": [
+        {
+          "name": "FIREBASE_SA_JSON",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/prod/firebase-service-account-json"
+        }
       ],
       "portMappings": [
         {
