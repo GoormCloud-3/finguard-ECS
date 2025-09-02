@@ -19,6 +19,4 @@ RUN pip install --no-cache-dir -r requirements.txt
     
 COPY . .
 
-CMD ["python", "app.py"]
-
-
+CMD ["opentelemetry-instrument", "--traces_exporter", "otlp", "--metrics_exporter", "none", "--service_name", "sqs-service", "python", "app.py"]

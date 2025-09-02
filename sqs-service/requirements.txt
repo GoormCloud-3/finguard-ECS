@@ -1,3 +1,9 @@
 boto3
 aws-xray-sdk>=2.14.0       # X-Ray 연동
 pandas
+
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+opentelemetry-instrumentation-botocore
+opentelemetry-instrumentation-boto3
+opentelemetry-propagator-aws-xray

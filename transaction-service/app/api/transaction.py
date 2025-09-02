@@ -15,12 +15,26 @@ from models.schema import (
 )
 
 import boto3
-from aws_xray_sdk.core import xray_recorder
+from botocore.config import Config
+
+# OpenTelemetry (X-Ray SDK 대신)
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 router = APIRouter()
 region = "ap-northeast-2"
-sqs_client = boto3.client("sqs", region_name=region)
-ssm_client = boto3.client("ssm", region_name=region)
+
+_boto_cfg = Config(
+    retries={"max_attempts": 10, "mode": "standard"},
+    connect_timeout=5,
+    read_timeout=30,
+)
+
+sqs_client = boto3.client("sqs", region_name=region, config=_boto_cfg)
+ssm_client = boto3.client("ssm", region_name=region, config=_boto_cfg)
+
+tracer = trace.get_tracer("transaction-service")
+
 
 # ---------------- 공용 유틸 (비-DB) ----------------
 
@@ -34,28 +48,15 @@ def haversine_distance(coord1, coord2) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def get_queue_url_sync() -> str:
-    # boto3는 main.py에서 패치되어 자동 서브세그먼트가 생김
-    param = ssm_client.get_parameter(
+    # botocore 계측이 sub-span을 자동으로 생성함
+    resp = ssm_client.get_parameter(
         Name="/finguard/dev/finance/trade_queue_host",
         WithDecryption=False
     )
-    return param["Parameter"]["Value"]
-
-def _build_trace_header() -> str:
-    """
-    X-Ray 전파 헤더 형식: "Root=1-...;Parent=...;Sampled=1|0"
-    가능하면 현재 subsegment의 id를 Parent로 사용.
-    """
-    ent = xray_recorder.current_subsegment() or xray_recorder.current_segment()
-    if not ent:
-        return ""
-    root = ent.trace_id          # e.g. 1-6f21f3b1-5c7c3c5e3a9c1c0d2e1f0a9b
-    parent = ent.id              # segment or subsegment id
-    sampled = "1" if getattr(ent, "sampled", False) else "0"
-    return f"Root={root};Parent={parent};Sampled={sampled}"
+    return resp["Parameter"]["Value"]
 
 
-# ---------------- 스레드풀에서 돌릴 "순수 DB 함수"들 (X-Ray 호출 절대 금지) ----------------
+# ---------------- 스레드풀에서 돌릴 "순수 DB 함수"들 ----------------
 
 def _check_fraud(conn, counter_account: str) -> bool:
     with conn.cursor() as cur:
@@ -111,7 +112,7 @@ def _apply_transfer(conn, my_account_id: str, counter_account_id: str, amount: f
         conn.begin()
         now = datetime.utcnow()
         date = now.strftime("%Y-%m-%d")
-        time = now.strftime("%H:%M:%S")
+        time_s = now.strftime("%H:%M:%S")
         debit_id = str(uuid.uuid4())
         credit_id = str(uuid.uuid4())
 
@@ -130,7 +131,7 @@ def _apply_transfer(conn, my_account_id: str, counter_account_id: str, amount: f
             (amount, counter_account_id)
         )
 
-        # 거래 내역 기록 (debit)
+        # 거래 내역 (debit)
         cur.execute(
             """
             INSERT INTO transactions
@@ -138,10 +139,10 @@ def _apply_transfer(conn, my_account_id: str, counter_account_id: str, amount: f
             VALUES
                 (%s, %s, %s, %s, %s, %s, %s, ST_PointFromText(%s), %s)
             """,
-            (debit_id, my_account_id, date, description, time, -amount, "debit", gps_wkt, counter_account_id)
+            (debit_id, my_account_id, date, description, time_s, -amount, "debit", gps_wkt, counter_account_id)
         )
 
-        # 거래 내역 기록 (credit)
+        # 거래 내역 (credit)
         cur.execute(
             """
             INSERT INTO transactions
@@ -149,7 +150,7 @@ def _apply_transfer(conn, my_account_id: str, counter_account_id: str, amount: f
             VALUES
                 (%s, %s, %s, %s, %s, %s, %s, ST_PointFromText(%s), %s)
             """,
-            (credit_id, counter_account_id, date, "입금", time, amount, "credit", gps_wkt, my_account_id)
+            (credit_id, counter_account_id, date, "입금", time_s, amount, "credit", gps_wkt, my_account_id)
         )
 
         conn.commit()
@@ -191,137 +192,121 @@ async def create_transaction(payload: TransactionRequest, request: Request):
     )
     conn = get_connection()
     try:
-        # 세그먼트 태깅
-        seg = xray_recorder.current_segment()
-        if seg:
-            seg.put_annotation("route", "/transaction")
-            seg.put_annotation("method", "POST")
-            seg.put_metadata("userSub", payload.userSub, "request")
+        # FastAPI 계측으로 inbound trace context는 자동 추출됨
+        with tracer.start_as_current_span("txn.create") as root_span:
+            root_span.set_attribute("http.route", "/transaction")
+            root_span.set_attribute("http.method", "POST")
+            root_span.set_attribute("user.sub", payload.userSub)
 
-        # 0) 큐 URL (SSM)
-        with xray_recorder.in_subsegment("ssm:get_queue_url"):
-            queue_url = get_queue_url_sync()
+            # 0) 큐 URL (SSM)
+            with tracer.start_as_current_span("ssm.get_queue_url"):
+                queue_url = get_queue_url_sync()
 
-        with conn.cursor() as cur:  # 커서는 스레드에서만 사용
-            # 1) 사기 계좌 확인
-            logging.info("🔍 Checking for fraudulent accounts")
-            with xray_recorder.in_subsegment("sql:check_fraud"):
-                is_fraud = await anyio.to_thread.run_sync(_check_fraud, conn, payload.counter_account)
-                if is_fraud:
-                    logging.warning("🚫 Fraudulent account detected: %s", payload.counter_account)
-                    raise HTTPException(status_code=403, detail={"error": "FraudulentAccount", "message": "사기 계좌로 송금할 수 없습니다."})
-            logging.info("Cheecking for fraudulent accounts completed")
+            with conn.cursor() as cur:  # 커서는 스레드만 접근
+                # 1) 사기 계좌 체크
+                with tracer.start_as_current_span("sql.check_fraud") as span:
+                    is_fraud = await anyio.to_thread.run_sync(_check_fraud, conn, payload.counter_account)
+                    span.set_attribute("account.counter", payload.counter_account)
+                    if is_fraud:
+                        raise HTTPException(status_code=403, detail={"error": "FraudulentAccount", "message": "사기 계좌로 송금할 수 없습니다."})
 
-            # 2) 내 계좌 확인
-            logging.info("🔍 Checking for my account")
-            with xray_recorder.in_subsegment("sql:select_my_account"):
-                my_account = await anyio.to_thread.run_sync(_select_my_account, conn, payload.my_account)
-                if not my_account:
-                    logging.warning("🚫 My account not found: %s", payload.my_account)
-                    raise HTTPException(status_code=404, detail={"error":"MyAccountNotFound","message":"내 계좌를 찾을 수 없습니다."})
-                if my_account["balance"] < float(payload.money):
-                    logging.warning("🚫 Insufficient balance for account: %s", payload.my_account)
-                    raise HTTPException(status_code=400, detail={"error": "InsufficientBalance", "message": "잔고가 부족합니다."})
-            logging.info("Checking for my account completed")
-            
-            # 3) 상대 계좌 확인
-            logging.info("🔍 Checking for counter account")
-            with xray_recorder.in_subsegment("sql:select_counter_account"):
-                counter_account = await anyio.to_thread.run_sync(_select_counter_account, conn, payload.counter_account)
-                if not counter_account:
-                    logging.warning("🚫 Counter account not found: %s", payload.counter_account)
-                    raise HTTPException(status_code=404, detail={"error": "CounterAccountNotFound", "message": "해당 계좌를 찾을 수 없습니다."})
-            logging.info("Checking for counter account completed")
+                # 2) 내 계좌
+                with tracer.start_as_current_span("sql.select_my_account") as span:
+                    my_account = await anyio.to_thread.run_sync(_select_my_account, conn, payload.my_account)
+                    span.set_attribute("account.my", payload.my_account)
+                    if not my_account:
+                        raise HTTPException(status_code=404, detail={"error":"MyAccountNotFound","message":"내 계좌를 찾을 수 없습니다."})
+                    if my_account["balance"] < float(payload.money):
+                        raise HTTPException(status_code=400, detail={"error": "InsufficientBalance", "message": "잔고가 부족합니다."})
 
-            # 4) 마지막 거래 위치
-            logging.info("🔍 Getting last transaction location")
-            with xray_recorder.in_subsegment("sql:last_tx_location"):
-                gps_last = await anyio.to_thread.run_sync(_get_last_tx_location, conn, my_account["account_id"])
-                
+                # 3) 상대 계좌
+                with tracer.start_as_current_span("sql.select_counter_account") as span:
+                    counter_account = await anyio.to_thread.run_sync(_select_counter_account, conn, payload.counter_account)
+                    if not counter_account:
+                        raise HTTPException(status_code=404, detail={"error": "CounterAccountNotFound", "message": "해당 계좌를 찾을 수 없습니다."})
 
-            # 5) 홈 좌표
-            logging.info("🔍 Getting home location")
-            with xray_recorder.in_subsegment("sql:get_home_location"):
-                gps_home = await anyio.to_thread.run_sync(_get_home_location, conn, payload.userSub)
-                if not gps_home:
-                    logging.warning("🚫 Home location not found for user: %s", payload.userSub)
-                    raise HTTPException(status_code=404, detail={"error":"UserNotFound","message":"유저 정보를 찾을 수 없습니다."})
+                # 4) 마지막 거래 위치
+                with tracer.start_as_current_span("sql.last_tx_location"):
+                    gps_last = await anyio.to_thread.run_sync(_get_last_tx_location, conn, my_account["account_id"])
 
-            # 6) 특징 계산 (비-DB)
-            logging.info("🔍 Computing features")
-            with xray_recorder.in_subsegment("biz:compute_features"):
-                distance_from_home = haversine_distance(gps_home, payload.location)
-                distance_from_last = haversine_distance(gps_last, payload.location) if gps_last else 0.0
-                repeat_retailer = await anyio.to_thread.run_sync(
-                    _has_repeat_retailer, conn, my_account["account_id"], payload.counter_account
-                )
-                repeat_retailer = 1.0 if repeat_retailer else 0.0
-                used_chip = int(payload.used_card) if payload.used_card else 0
-                gps_wkt = f"POINT({payload.location[1]} {payload.location[0]})"
+                # 5) 홈 좌표
+                with tracer.start_as_current_span("sql.get_home_location"):
+                    gps_home = await anyio.to_thread.run_sync(_get_home_location, conn, payload.userSub)
+                    if not gps_home:
+                        raise HTTPException(status_code=404, detail={"error":"UserNotFound","message":"유저 정보를 찾을 수 없습니다."})
 
-            # 7) 송금 적용 (원자성)
-            logging.info("🔍 Applying transfer")
-            with xray_recorder.in_subsegment("sql:apply_transfer"):
-                try:
-                    debit_id, credit_id = await anyio.to_thread.run_sync(
-                        _apply_transfer,
-                        conn,
-                        my_account["account_id"],
-                        counter_account["account_id"],
-                        float(payload.money),
-                        (payload.description or "출금"),
-                        gps_wkt
+                # 6) 특징 계산 (비-DB)
+                with tracer.start_as_current_span("biz.compute_features") as span:
+                    distance_from_home = haversine_distance(gps_home, payload.location)
+                    distance_from_last = haversine_distance(gps_last, payload.location) if gps_last else 0.0
+                    repeat_retailer = await anyio.to_thread.run_sync(
+                        _has_repeat_retailer, conn, my_account["account_id"], payload.counter_account
                     )
-                except ValueError as ve:
-                    if str(ve) == "INSUFFICIENT_BALANCE":
-                        raise HTTPException(status_code=400, detail={"error":"InsufficientBalance","message":"잔고가 부족합니다."})
-                    raise
+                    repeat_retailer = 1.0 if repeat_retailer else 0.0
+                    used_chip = int(payload.used_card) if payload.used_card else 0
+                    gps_wkt = f"POINT({payload.location[1]} {payload.location[0]})"
+                    span.set_attribute("feature.distance_from_home", distance_from_home)
+                    span.set_attribute("feature.distance_from_last", distance_from_last)
+                    span.set_attribute("feature.repeat_retailer", repeat_retailer)
+                    span.set_attribute("feature.used_chip", used_chip)
 
-            # 8) 중앙값 갱신
-            logging.info("🔍 Updating median heaps")
-            with xray_recorder.in_subsegment("sql:update_median"):
-                min_heap, max_heap = await anyio.to_thread.run_sync(_load_median_heaps, conn, payload.my_account)
+                # 7) 송금 적용 (원자성)
+                with tracer.start_as_current_span("sql.apply_transfer"):
+                    try:
+                        debit_id, credit_id = await anyio.to_thread.run_sync(
+                            _apply_transfer,
+                            conn,
+                            my_account["account_id"],
+                            counter_account["account_id"],
+                            float(payload.money),
+                            (payload.description or "출금"),
+                            gps_wkt
+                        )
+                    except ValueError as ve:
+                        if str(ve) == "INSUFFICIENT_BALANCE":
+                            raise HTTPException(status_code=400, detail={"error":"InsufficientBalance","message":"잔고가 부족합니다."})
+                        raise
 
-                if max_heap.size() and min_heap.size() and max_heap.size() == min_heap.size():
-                    median_before = (max_heap.peek() + min_heap.peek()) / 2
-                elif max_heap.size():
-                    median_before = max_heap.peek()
-                else:
-                    median_before = 0.0
+                # 8) 중앙값 갱신
+                with tracer.start_as_current_span("sql.update_median"):
+                    min_heap, max_heap = await anyio.to_thread.run_sync(_load_median_heaps, conn, payload.my_account)
 
-                ratio_to_median = float(payload.money) / median_before if median_before else 1.0
+                    if max_heap.size() and min_heap.size() and max_heap.size() == min_heap.size():
+                        median_before = (max_heap.peek() + min_heap.peek()) / 2
+                    elif max_heap.size():
+                        median_before = max_heap.peek()
+                    else:
+                        median_before = 0.0
 
-                if max_heap.size() == 0 or float(payload.money) < max_heap.peek():
-                    max_heap.push(float(payload.money))
-                else:
-                    min_heap.push(float(payload.money))
-                if max_heap.size() > min_heap.size() + 1:
-                    min_heap.push(max_heap.pop())
-                elif min_heap.size() > max_heap.size():
-                    max_heap.push(min_heap.pop())
+                    ratio_to_median = float(payload.money) / median_before if median_before else 1.0
 
-                await anyio.to_thread.run_sync(_save_median_heaps, conn, payload.my_account, min_heap, max_heap)
+                    if max_heap.size() == 0 or float(payload.money) < max_heap.peek():
+                        max_heap.push(float(payload.money))
+                    else:
+                        min_heap.push(float(payload.money))
+                    if max_heap.size() > min_heap.size() + 1:
+                        min_heap.push(max_heap.pop())
+                    elif min_heap.size() > max_heap.size():
+                        max_heap.push(min_heap.pop())
 
-            # 9) SQS 전송
-            logging.info("🔍 Sending message to SQS")
-            with xray_recorder.in_subsegment("sqs:send_message"):
-                message = {
-                    "userSub": payload.userSub,
-                    "features": [distance_from_home, distance_from_last, ratio_to_median, repeat_retailer, used_chip],
-                }
-                trace_header = _build_trace_header()  # ✅ 전파 헤더 생성
-                dedup_id = f"{int(datetime.utcnow().timestamp() * 1000)}-{uuid.uuid4()}"
+                    await anyio.to_thread.run_sync(_save_median_heaps, conn, payload.my_account, min_heap, max_heap)
 
-                sqs_client.send_message(
-                    QueueUrl=queue_url,
-                    MessageBody=json.dumps(message),
-                    MessageGroupId="trade-group",
-                    MessageDeduplicationId=dedup_id,
-                    MessageAttributes={
-                        "X-Amzn-Trace-Id": {"DataType": "String", "StringValue": trace_header}
+                # 9) SQS 전송
+                with tracer.start_as_current_span("sqs.send_message") as span:
+                    message = {
+                        "userSub": payload.userSub,
+                        "features": [distance_from_home, distance_from_last, ratio_to_median, repeat_retailer, used_chip],
                     }
-                )
-            logging.info("Message sent to SQS successfully")
+                    dedup_id = f"{int(datetime.utcnow().timestamp() * 1000)}-{uuid.uuid4()}"
+                    # botocore 계측 + OTEL_PROPAGATORS=xray 설정으로
+                    # 전파 헤더는 MessageAttributes에 자동 주입된다.
+                    sqs_client.send_message(
+                        QueueUrl=queue_url,
+                        MessageBody=json.dumps(message),
+                        MessageGroupId="trade-group",             # FIFO인 경우
+                        MessageDeduplicationId=dedup_id,          # FIFO인 경우
+                        # MessageAttributes는 수동 주입하지 않음(자동 주입)
+                    )
 
         # 응답
         return TransactionSuccessResponse(
@@ -343,7 +328,7 @@ async def create_transaction(payload: TransactionRequest, request: Request):
     except HTTPException:
         logging.exception("create_transaction failed with HTTPException")
         raise
-    except Exception as e:
+    except Exception:
         logging.exception("create_transaction failed")
         try:
             conn.rollback()
@@ -353,7 +338,6 @@ async def create_transaction(payload: TransactionRequest, request: Request):
     finally:
         try:
             if conn:
-                logging.info("🔚 Closing DB connection")
                 conn.close()
         except Exception:
             pass

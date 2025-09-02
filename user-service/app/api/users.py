@@ -1,19 +1,23 @@
-# api/user.py (예시 경로 — 파일명은 네 프로젝트 구조에 맞춰 사용)
+# api/user.py
 import logging
 from typing import Sequence
 
 import anyio
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pymysql.err import IntegrityError, OperationalError
 
 from db.rds import get_connection
 from models.schema import UserResponse, UserRequest
-from aws_xray_sdk.core import xray_recorder
+
+# ✅ OpenTelemetry 로 전환
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 router = APIRouter()
+tracer = trace.get_tracer("account-service")  # 서비스명은 OTEL_RESOURCE_ATTRIBUTES로도 설정됨
 
-# ----- 스레드풀에서 실행될 순수 DB 함수 (X-Ray 호출 금지) -----
+# ----- 스레드풀에서 실행될 순수 DB 함수 -----
 
 def _insert_user(conn, user_sub: str, point_wkt: str) -> None:
     with conn.cursor() as cursor:
@@ -28,28 +32,23 @@ def _insert_user(conn, user_sub: str, point_wkt: str) -> None:
 @router.post("/users", response_model=UserResponse)
 async def create_user(payload: UserRequest):
     """
-    - X-Ray 세그먼트: 미들웨어에서 요청마다 자동 생성
-    - 여기서는 필요한 구간만 in_subsegment 로 감싼다.
-    - DB 작업은 블로킹이므로 anyio.to_thread.run_sync 로 스레드풀에 오프로딩
+    - FastAPI OTel 계측으로 요청 인바운드 컨텍스트는 자동 추출됨
+    - DB 구간을 명시적 span 으로 감싸서 가시성 강화
+    - 블로킹 DB는 anyio.to_thread.run_sync 로 오프로딩
     """
     conn = None
     try:
         conn = get_connection()
-        logging.info("Starting create user")
-
         user_sub = payload.userSub
-        gps_location = payload.gps_location  # 기대: [lat, lon] 또는 (lat, lon)
+        gps_location: Sequence[float] | None = payload.gps_location
 
         # 입력 검증
         if not user_sub or not gps_location:
-            logging.error("Missing userSub or gps_location in request")
             return JSONResponse(
                 status_code=400,
                 content={"error": "BadRequest", "message": "userSub 또는 gps_location 누락"},
             )
-
         if not isinstance(gps_location, (list, tuple)) or len(gps_location) != 2:
-            logging.error("Invalid gps_location format: %s", gps_location)
             return JSONResponse(
                 status_code=400,
                 content={"error": "BadRequest", "message": "gps_location 형식은 [lat, lon] 이어야 합니다."},
@@ -59,14 +58,17 @@ async def create_user(payload: UserRequest):
         # MySQL WKT는 "POINT(lon lat)" 순서
         point_wkt = f"POINT({lon} {lat})"
 
-        logging.info(f"🔍 Creating user with userSub: {user_sub}")
-
         # DB INSERT 구간 트레이싱
-        with xray_recorder.in_subsegment("sql:insert_user"):
-            logging.info(f"💾 Inserting user into DB: {user_sub}, {point_wkt}")
-            await anyio.to_thread.run_sync(_insert_user, conn, user_sub, point_wkt)
-
-        logging.info(f"✅ User created successfully: {user_sub}, {point_wkt}")
+        with tracer.start_as_current_span("sql.insert_user") as span:
+            span.set_attribute("db.system", "mysql")
+            span.set_attribute("app.user.sub", user_sub)
+            span.set_attribute("db.statement", "INSERT INTO users(userSub, gps_location) VALUES (?, ST_PointFromText(?))")
+            try:
+                await anyio.to_thread.run_sync(_insert_user, conn, user_sub, point_wkt)
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
 
         return {
             "message": "Sign up successful. Please verify your email or phone if required.",
@@ -74,7 +76,6 @@ async def create_user(payload: UserRequest):
         }
 
     except IntegrityError as e:
-        logging.warning("User already exists: %s", e)
         return JSONResponse(
             status_code=409,
             content={"error": "UsernameExistsException", "message": "해당 아이디는 이미 존재합니다."},
@@ -94,8 +95,6 @@ async def create_user(payload: UserRequest):
     finally:
         try:
             if conn:
-                logging.info("🔚 Closing DB connection")
                 conn.close()
         except Exception:
             logging.error("Failed to close DB connection")
-            pass

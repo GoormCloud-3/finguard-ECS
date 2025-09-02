@@ -16,9 +16,16 @@ env:
   AWS_REGION: ap-northeast-2
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   CLUSTER_NAME: ecs-cluster
+
+  # 서비스/패밀리/리포지토리 목록
   SERVICES: account-service,transaction-service,user-service,sqs-service,fcm-service
-  REPOS: account-service,transaction-service,user-service,sqs-service,fcm-service,xray-daemon
   FAMILIES: account,sqs,transaction,user,fcm
+
+  # 🔁 ECR 리포지토리: 각 서비스 + adot-collector (xray-daemon 제거)
+  REPOS: account-service,transaction-service,user-service,sqs-service,fcm-service,adot-collector
+
+  # 🗒️ CloudWatch Log Groups (배포 때 만든 것들)
+  LOG_GROUPS: /ecs/account-service,/ecs/transaction-service,/ecs/user-service,/ecs/sqs-service,/ecs/fcm-service,/ecs/adot-collector
 
 jobs:
   destroy:
@@ -39,13 +46,13 @@ jobs:
       - name: Mask account id
         run: echo "::add-mask::${AWS_ACCOUNT_ID}"
 
-            # (A) 혹시 남아있는 키/세션 제거
+      # (A) leftover 키/세션 제거
       - name: Clear any leftover AWS credentials
         run: |
           unset AWS_ACCESS_KEY_ID || true
           unset AWS_SECRET_ACCESS_KEY || true
           unset AWS_SESSION_TOKEN || true
-          unset AWS_PROFILE || true  
+          unset AWS_PROFILE || true
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -53,14 +60,11 @@ jobs:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/ecs-destroy-role
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubECSDestroySession
-            # (C) 지금 내가 누구인지 확인 (반드시 ecs-destroy-role로 찍혀야 정상)
+
       - name: Who am I? (Caller identity)
         run: |
           set -euo pipefail
-          echo "Caller identity:"
           aws sts get-caller-identity
-          echo "Caller ARN:"
-          aws sts get-caller-identity --query Arn --output text
 
       - name: Ensure tools
         run: |
@@ -68,6 +72,33 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y jq
 
+      # 1) 오토스케일링 정책/타깃 정리(선제 제거 - 선택이지만 깔끔)
+      - name: Detach Auto Scaling Policies and Targets
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra svcs <<< "$SERVICES"
+          for svc in "${svcs[@]}"; do
+            RID="service/${CLUSTER_NAME}/${svc}"
+
+            # 정책 나열 후 삭제
+            POLS=$(aws application-autoscaling describe-scaling-policies \
+              --service-namespace ecs --resource-id "$RID" \
+              --scalable-dimension ecs:service:DesiredCount \
+              --query 'ScalingPolicies[].PolicyName' --output text 2>/dev/null || echo "")
+            for p in $POLS; do
+              aws application-autoscaling delete-scaling-policy \
+                --service-namespace ecs --resource-id "$RID" \
+                --scalable-dimension ecs:service:DesiredCount \
+                --policy-name "$p" || true
+            done
+
+            # 스케일러블 타깃 비활성화
+            aws application-autoscaling deregister-scalable-target \
+              --service-namespace ecs --resource-id "$RID" \
+              --scalable-dimension ecs:service:DesiredCount || true
+          done
+
+      # 2) 서비스 중지/삭제
       - name: Stop & Delete ECS Services (scale to 0 and wait)
         run: |
           set -euo pipefail
@@ -81,36 +112,30 @@ jobs:
 
             if [ "$STATUS" = "ACTIVE" ] || [ "$STATUS" = "DRAINING" ]; then
               echo "➡️  Scaling $svc to 0"
-              aws ecs update-service \
-                --cluster "$CLUSTER_NAME" --service "$svc" \
-                --desired-count 0 --region "$AWS_REGION" >/dev/null
+              aws ecs update-service --cluster "$CLUSTER_NAME" --service "$svc" \
+                --desired-count 0 --region "$AWS_REGION" >/dev/null || true
 
               echo "⏳ Waiting for tasks to stop: $svc"
-              for i in $(seq 1 30); do
+              for i in $(seq 1 36); do
                 RUNNING=$(aws ecs describe-services \
                   --cluster "$CLUSTER_NAME" --services "$svc" \
                   --region "$AWS_REGION" \
                   --query 'services[0].runningCount' --output text 2>/dev/null || echo 0)
-                if [ "$RUNNING" = "0" ] || [ "$RUNNING" = "None" ] || [ -z "$RUNNING" ]; then
-                  break
-                fi
+                [ "$RUNNING" = "0" ] && break
                 sleep 10
               done
 
               echo "🗑️  Deleting service $svc"
-              aws ecs delete-service \
-                --cluster "$CLUSTER_NAME" --service "$svc" \
+              aws ecs delete-service --cluster "$CLUSTER_NAME" --service "$svc" \
                 --force --region "$AWS_REGION" >/dev/null || true
 
-              # 사라질 때까지 대기
+              # 완전 삭제까지 대기
               for i in $(seq 1 18); do
                 OUT=$(aws ecs describe-services \
                   --cluster "$CLUSTER_NAME" --services "$svc" \
                   --region "$AWS_REGION" \
                   --query "services[0].status" --output text 2>/dev/null || echo "MISSING")
-                if [ "$OUT" = "None" ] || [ "$OUT" = "MISSING" ]; then
-                  break
-                fi
+                [ "$OUT" = "MISSING" ] && break
                 sleep 10
               done
             else
@@ -118,27 +143,29 @@ jobs:
             fi
           done
 
-      - name: Deregister Task Definitions (all ACTIVE revisions)
+      # 3) 태스크 정의 전부 비활성화 (ACTIVE/INACTIVE 모두)
+      - name: Deregister Task Definitions (ALL revisions)
         run: |
           set -euo pipefail
           IFS=',' read -ra families <<< "$FAMILIES"
 
           for fam in "${families[@]}"; do
-            echo "➡️  Deregistering ACTIVE task defs for family: ${fam}-task"
-            ARNS=$(aws ecs list-task-definitions \
-              --family-prefix "${fam}-task" --status ACTIVE \
-              --region "$AWS_REGION" \
-              --query "taskDefinitionArns[]" --output text || true)
-            if [ -n "$ARNS" ] && [ "$ARNS" != "None" ]; then
-              for arn in $ARNS; do
-                aws ecs deregister-task-definition \
-                  --task-definition "$arn" --region "$AWS_REGION" || true
-              done
-            else
-              echo "ℹ️  No ACTIVE task defs for ${fam}-task"
-            fi
+            echo "➡️  Deregistering task defs for family: ${fam}-task"
+            for STATUS in ACTIVE INACTIVE; do
+              ARNS=$(aws ecs list-task-definitions \
+                --family-prefix "${fam}-task" --status $STATUS \
+                --region "$AWS_REGION" \
+                --query "taskDefinitionArns[]" --output text 2>/dev/null || echo "")
+              if [ -n "$ARNS" ]; then
+                for arn in $ARNS; do
+                  aws ecs deregister-task-definition --task-definition "$arn" \
+                    --region "$AWS_REGION" || true
+                done
+              fi
+            done
           done
 
+      # 4) ECR 이미지/리포지토리 삭제 (서비스 + adot-collector, xray-daemon 제거됨)
       - name: Delete all images in ECR repositories (paged)
         run: |
           set -euo pipefail
@@ -155,7 +182,6 @@ jobs:
                 PAGE=$(aws ecr list-images --repository-name "$repo" \
                         --region "$AWS_REGION" --next-token "$NEXT" 2>/dev/null || echo '{}')
               fi
-
               IDS=$(echo "$PAGE" | jq -c '.imageIds // []')
               NEXT=$(echo "$PAGE" | jq -r '.nextToken // "None"')
 
@@ -176,13 +202,24 @@ jobs:
         run: |
           set -euo pipefail
           IFS=',' read -ra repos <<< "$REPOS"
-
           for repo in "${repos[@]}"; do
             echo "🗑️  Deleting ECR repo: $repo"
             aws ecr delete-repository --repository-name "$repo" \
               --force --region "$AWS_REGION" >/dev/null || true
           done
 
+      # 5) CloudWatch 로그 그룹 삭제 (요청 사항)
+      - name: Delete CloudWatch Log Groups (best-effort)
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra lgs <<< "$LOG_GROUPS"
+          for lg in "${lgs[@]}"; do
+            echo "🗑️  Deleting log group: $lg"
+            aws logs delete-log-group --log-group-name "$lg" \
+              --region "$AWS_REGION" >/dev/null || true
+          done
+
+      # 6) ECS 클러스터 삭제 (마지막)
       - name: Delete ECS Cluster
         run: |
           set -euo pipefail
@@ -192,7 +229,7 @@ jobs:
           if [ "$STATUS" = "ACTIVE" ]; then
             echo "🗑️  Deleting cluster: $CLUSTER_NAME"
             aws ecs delete-cluster --cluster "$CLUSTER_NAME" \
-              --region "$AWS_REGION" >/dev/null
+              --region "$AWS_REGION" >/dev/null || true
           else
             echo "ℹ️  Cluster not ACTIVE or missing; skipping"
           fi

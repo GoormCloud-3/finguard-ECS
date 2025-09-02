@@ -2,8 +2,8 @@
   "family": "user-task",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
-  "cpu": "512",
-  "memory": "1024",
+  "cpu": "1024",
+  "memory": "2048",
   "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
   "containerDefinitions": [
@@ -12,9 +12,12 @@
       "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/user-service:${IMAGE_TAG}",
       "essential": true,
       "environment": [
-        { "name": "AWS_XRAY_DAEMON_ADDRESS", "value": "127.0.0.1:2000" },
-        { "name": "AWS_XRAY_CONTEXT_MISSING", "value": "LOG_ERROR" },
-        { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" }
+        { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
+        { "name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "http://127.0.0.1:4317" },
+        { "name": "OTEL_EXPORTER_OTLP_PROTOCOL", "value": "grpc" },
+        { "name": "OTEL_PROPAGATORS", "value": "xray" },
+        { "name": "OTEL_TRACES_SAMPLER", "value": "parentbased_always_on" },
+        { "name": "OTEL_RESOURCE_ATTRIBUTES", "value": "service.name=user-service,service.namespace=finguard" }
       ],
       "portMappings": [
         {
@@ -27,13 +30,9 @@
         "options": {
           "awslogs-group": "/ecs/user-service",
           "awslogs-region": "${AWS_REGION}",
-          "awslogs-stream-prefix": "ecs",
-          "awslogs-create-group": "true"
+          "awslogs-stream-prefix": "ecs"
         }
       },
-      "dependsOn": [
-        { "containerName": "xray-daemon", "condition": "START" }
-      ],
       "healthCheck": {
         "command": ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"],
         "interval": 10,
@@ -43,26 +42,21 @@
       }
     },
     {
-      "name": "xray-daemon",
-      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/xray-daemon:3.x",
+      "name": "adot-collector",
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest", 
       "essential": false,
-      "command": ["-o"], 
+      "command": ["/awscollector","--config=/etc/ecs/ecs-otel-config.yaml"],
+      "environment": [
+        { "name": "AWS_REGION", "value": "${AWS_REGION}" }
+      ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/xray-daemon",
+          "awslogs-group": "/ecs/adot-collector",
           "awslogs-region": "${AWS_REGION}",
-          "awslogs-stream-prefix": "ecs",
-          "awslogs-create-group": "true"
+          "awslogs-stream-prefix": "ecs"
         }
-      },
-      "portMappings": [
-        { "containerPort": 2000, "protocol": "udp" },
-        { "containerPort": 2000, "protocol": "tcp" }
-      ],
-      "environment": [
-        { "name": "AWS_REGION", "value": "${AWS_REGION}" }
-      ]
+      }
     }
   ]
 }

@@ -11,9 +11,13 @@ from models.schema import (
 )
 from db.rds import get_connection
 from db.dynamo import store_fcm_token
-from aws_xray_sdk.core import xray_recorder
+
+# 🔁 X-Ray SDK 제거하고 OpenTelemetry 사용
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 router = APIRouter()
+tracer = trace.get_tracer("account-service")  # 서비스명은 OTEL_RESOURCE_ATTRIBUTES로도 들어감
 
 
 def generate_account_number() -> str:
@@ -23,7 +27,7 @@ def generate_account_number() -> str:
     return f"{part1}-{part2}-{part3}"
 
 
-# ----- 스레드풀에서 실행될 순수 DB/비즈 함수들 (X-Ray 호출 금지) -----
+# ----- 스레드풀에서 실행될 순수 DB/비즈 함수 -----
 
 def _check_unique_account(conn, acc_num: str) -> bool:
     query = "SELECT 1 FROM accounts WHERE accountNumber = %s"
@@ -77,26 +81,32 @@ def _select_accounts_by_user(conn, user_sub: str):
 @router.post("/accounts/create", response_model=AccountCreateResult)
 async def create_account(payload: CreateAccountRequest):
     logging.info("Starting createAccount API")
-    logging.info(f"🔍 Creating account for userSub: {payload.userSub}")
     conn = get_connection()
     try:
         # 비즈: 고유 계좌번호 생성
-        logging.info("Generating unique account number")
-        with xray_recorder.in_subsegment("biz:generate_unique_number"):
-            account_number = await anyio.to_thread.run_sync(_generate_unique_account_number, conn)
-            logging.info(f"✅ Unique account number generated: {account_number}")
-        logging.info("Generating unique account number completed")
-
+        with tracer.start_as_current_span("biz.generate_unique_number") as span:
+            try:
+                account_number = await anyio.to_thread.run_sync(_generate_unique_account_number, conn)
+                span.set_attribute("app.account.number", account_number)
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
         # DB INSERT
         account_id = str(uuid4())
-        logging.info(f"💾 Inserting account into DB: {account_id}, {payload.userSub}, {payload.accountName}, {account_number}, {payload.bankName}")
-        with xray_recorder.in_subsegment("sql:insert_account"):
-            await anyio.to_thread.run_sync(
-                _insert_account,
-                conn,
-                (account_id, payload.userSub, payload.accountName, account_number, payload.bankName)
-            )
-        logging.info(f"✅ Account created successfully: {account_id}, {payload.userSub}, {payload.accountName}, {account_number}, {payload.bankName}")
+        with tracer.start_as_current_span("sql.insert_account") as span:
+            span.set_attribute("db.system", "mysql")  # 사용 DB에 맞게
+            span.set_attribute("db.statement", "INSERT INTO accounts(...) VALUES(...)")
+            try:
+                await anyio.to_thread.run_sync(
+                    _insert_account,
+                    conn,
+                    (account_id, payload.userSub, payload.accountName, account_number, payload.bankName)
+                )
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
 
         return AccountCreateResult(
             message="Account created successfully",
@@ -108,38 +118,43 @@ async def create_account(payload: CreateAccountRequest):
             )
         )
     except Exception as e:
-        logging.error(f"❌ Error during createAccount API : {e}")
+        logging.exception("createAccount failed")
         raise HTTPException(status_code=400, detail="create_account ERROR : " + str(e))
     finally:
         if conn:
-            logging.info("🔚 Closing DB connection")
             conn.close()
 
 
 @router.get("/accounts/{account_id}", response_model=AccountDetailResponse)
 async def get_account(account_id: str):
     logging.info("Starting getAccount API")
-    logging.info(f"🔍 Fetching account transactions for account_id: {account_id}")
     conn = get_connection()
     try:
         # 계좌 상세
-        logging.info("Starting account detail query")
-        with xray_recorder.in_subsegment("sql:select_account"):
-            logging.info(f"💾 Querying account details for account_id: {account_id}")
-            acc = await anyio.to_thread.run_sync(_select_account, conn, account_id)
-            if not acc:
-                logging.warning(f"⚠️ Account not found: {account_id}")
-                raise HTTPException(status_code=404, detail="Account not found")
-        logging.info(f"✅ Account details fetched: {acc}")
-        logging.info("Account detail query completed")
+        with tracer.start_as_current_span("sql.select_account") as span:
+            span.set_attribute("db.system", "mysql")
+            span.set_attribute("db.statement", "SELECT ... FROM accounts WHERE account_id = ?")
+            span.set_attribute("db.param.account_id", account_id)
+            try:
+                acc = await anyio.to_thread.run_sync(_select_account, conn, account_id)
+                if not acc:
+                    raise HTTPException(status_code=404, detail="Account not found")
+            except Exception as e:
+                if not isinstance(e, HTTPException):
+                    span.record_exception(e)
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
 
         # 거래 목록
-        logging.info("Starting transactions query")
-        with xray_recorder.in_subsegment("sql:select_transactions"):
-            logging.info(f"💾 Querying transactions for account_id: {account_id}")
-            txs = await anyio.to_thread.run_sync(_select_transactions, conn, account_id)
-        logging.info(f"✅ Transactions fetched: {len(txs)} items")
-        logging.info("Transactions query completed")
+        with tracer.start_as_current_span("sql.select_transactions") as span:
+            span.set_attribute("db.system", "mysql")
+            span.set_attribute("db.statement", "SELECT ... FROM transactions WHERE account_id = ?")
+            try:
+                txs = await anyio.to_thread.run_sync(_select_transactions, conn, account_id)
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
 
         transactions = [
             TransactionItem(
@@ -160,34 +175,41 @@ async def get_account(account_id: str):
             balance=acc["balance"],
             transactions=transactions
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        logging.error(f"❌ Error during getAccount API : {e}")
+        logging.exception("getAccount failed")
         raise HTTPException(status_code=400, detail="get_account ERROR : " + str(e))
     finally:
         if conn:
-            logging.info("🔚 Closing DB connection")
             conn.close()
 
 
 @router.post("/accounts/financial", response_model=GetAccountListResponse)
 async def get_account_list(payload: GetAccountListRequest):
     logging.info("Starting getAccountList API")
-    logging.info(f"🔍 Fetching accounts for userSub: {payload.sub}")
     conn = get_connection()
     try:
-        # DynamoDB(Firebase 토큰 저장) — boto3는 main.py에서 선택 패치되어 자동 subsegment 생성됨
-        with xray_recorder.in_subsegment("ddb:store_fcm_token"):
-            logging.info(f"💾 Storing FCM tokens for userSub: {payload.sub}")
-            store_fcm_token(payload.sub, payload.fcmToken)
-            logging.info(f"✅ FCM tokens stored for userSub: {payload.sub}")
+        # DynamoDB 호출 (boto3 자동계측 쓰면 span 자동 생성됨. 수동으로도 감싸두자.)
+        with tracer.start_as_current_span("ddb.store_fcm_token") as span:
+            try:
+                store_fcm_token(payload.sub, payload.fcmToken)
+                span.set_attribute("app.user.sub", payload.sub)
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
 
-        # 계좌 목록
-        logging.info("Starting accounts query")
-        with xray_recorder.in_subsegment("sql:select_accounts_by_userSub"):
-            logging.info(f"💾 Querying accounts for userSub: {payload.sub}")
-            accounts = await anyio.to_thread.run_sync(_select_accounts_by_user, conn, payload.sub)
-        logging.info(f"✅ Accounts fetched: {len(accounts)} items")
-        logging.info("Accounts query completed")
+        # 계좌 목록 조회
+        with tracer.start_as_current_span("sql.select_accounts_by_userSub") as span:
+            span.set_attribute("db.system", "mysql")
+            span.set_attribute("db.statement", "SELECT ... FROM accounts WHERE userSub = ?")
+            try:
+                accounts = await anyio.to_thread.run_sync(_select_accounts_by_user, conn, payload.sub)
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
 
         return GetAccountListResponse(
             sub=payload.sub,
@@ -202,9 +224,8 @@ async def get_account_list(payload: GetAccountListRequest):
             ]
         )
     except Exception as e:
-        logging.error(f"❌ Error during getAccountList API : {e}")
+        logging.exception("getAccountList failed")
         raise HTTPException(status_code=400, detail="get_account_list ERROR : " + str(e))
     finally:
         if conn:
-            logging.info("🔚 Closing DB connection")
             conn.close()

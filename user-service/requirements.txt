@@ -2,4 +2,9 @@ fastapi
 uvicorn==0.35.0
 boto3
 pymysql
-aws-xray-sdk>=2.14.0       # X-Ray 연동
+# aws-xray-sdk>=2.14.0       # X-Ray 연동
+
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-requests

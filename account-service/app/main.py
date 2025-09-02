@@ -1,80 +1,66 @@
+# main.py
 from fastapi import FastAPI, Request
 import logging
+import time
 
-from aws_xray_sdk.core import xray_recorder, patch
-from aws_xray_sdk.core.async_context import AsyncContext
-
-# 1) starlette 미들웨어 있나 시도
-try:
-    from aws_xray_sdk.ext.starlette.middleware import XRayMiddleware as _XRayMiddleware
-except Exception:
-    _XRayMiddleware = None
-
-from starlette.middleware.base import BaseHTTPMiddleware  # ✅ 폴백용
-EXCLUDE_PATHS = {"/health"}
-
-
-app = FastAPI()
+# ─────────────────────────────────────────────────────────
+# 0) 로깅 기본 설정
+# ─────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.getLogger("uvicorn").handlers = logging.getLogger().handlers
 logging.getLogger("uvicorn.access").handlers = logging.getLogger().handlers
 
-# X-Ray 설정
-xray_recorder.configure(
-    service="account-service",
-    context=AsyncContext(),
-    sampling=False,           
-)
-patch(('boto3',))  # boto3/requests 자동 계측
+# ─────────────────────────────────────────────────────────
+# 1) FastAPI 앱
+# ─────────────────────────────────────────────────────────
+app = FastAPI()
 
-# 2) 폴백 미들웨어 (앱 객체를 교체하지 않음!)
-class FallbackXRayMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        if request.url.path in EXCLUDE_PATHS:
-            return await call_next(request)
-        
-        name = f"{request.method} {request.url.path}"
-        xray_recorder.begin_segment(name)
-        try:
-            response = await call_next(request)
-            seg = xray_recorder.current_segment()
-            if seg:
-                seg.put_http_meta("status", response.status_code)
-            return response
-        except Exception as e:
-            seg = xray_recorder.current_segment()
-            if seg:
-                seg.put_annotation("error", True)
-                seg.add_exception(e)
-            raise
-        finally:
-            xray_recorder.end_segment()
+# ─────────────────────────────────────────────────────────
+# 2) Health 체크
+# ─────────────────────────────────────────────────────────
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
-# 3) starlette 미들웨어 있으면 그걸 쓰고, 없으면 폴백 추가
-if _XRayMiddleware:
-    app.add_middleware(_XRayMiddleware, recorder=xray_recorder)
-else:
-    logging.warning("Using fallback X-Ray middleware (ext.starlette not found).")
-    app.add_middleware(FallbackXRayMiddleware)
+# ─────────────────────────────────────────────────────────
+# 3) Prometheus /metrics 노출 (ADOT가 긁어감)
+# ─────────────────────────────────────────────────────────
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from starlette.responses import Response
 
-# (선택) 런타임에서 실제 상태 로깅
-try:
-    import importlib.metadata as md, aws_xray_sdk, pkgutil
-    ver = md.version("aws-xray-sdk")
-    has_star = False
-    try:
-        import aws_xray_sdk.ext as E
-        has_star = any(m.name == "starlette" for m in pkgutil.iter_modules(E.__path__))
-    except Exception:
-        pass
-    logging.info(f"[X-Ray] version={ver}, module_path={aws_xray_sdk.__file__}, has_ext_starlette={has_star}")
-except Exception as e:
-    logging.warning(f"[X-Ray] version check failed: {e}")
+REQUEST_COUNT = Counter("http_requests_total", "Total HTTP requests", ["method", "path", "status"])
+REQUEST_LATENCY = Histogram("http_request_duration_seconds", "Request latency (seconds)", ["path"])
 
-# ✅ 이제 자유롭게 라우터 추가 가능 (앱을 바꿔치기 안 했기 때문)
+@app.middleware("http")
+async def prometheus_middleware(request: Request, call_next):
+    # 헬스는 지표에서 제외해도 됨(원하면 조건문으로 제외)
+    start = time.time()
+    response = await call_next(request)
+    latency = time.time() - start
+
+    path = request.url.path
+    REQUEST_COUNT.labels(request.method, path, str(response.status_code)).inc()
+    REQUEST_LATENCY.labels(path).observe(latency)
+    return response
+
+@app.get("/metrics")
+def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+# ─────────────────────────────────────────────────────────
+# 4) 라우터(include_router)
+# ─────────────────────────────────────────────────────────
 from api.account import router as account_router
 app.include_router(account_router)
 
-@app.get("/health")
-def health():
-    return {"health": "ok"}
+# ─────────────────────────────────────────────────────────
+# 5) 실행/트레이싱 관련 안내(코드 변경 불필요)
+# ─────────────────────────────────────────────────────────
+# 트레이스는 OpenTelemetry 자동계측으로 보냄:
+#   실행 커맨드 예)  opentelemetry-instrument --traces_exporter otlp --metrics_exporter none \
+#                     --service_name account-service \
+#                     uvicorn main:app --host 0.0.0.0 --port 8000
+# 환경변수(태스크 정의에서 주입):
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
+#   OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+#   OTEL_RESOURCE_ATTRIBUTES=service.name=account-service,service.namespace=finguard

@@ -3,4 +3,14 @@ uvicorn==0.35.0
 pymysql
 boto3            # SNS, SQS 연동 시 필요
 python-dotenv    # 환경변수 관리
-aws-xray-sdk>=2.14.0       # X-Ray 연동
+# aws-xray-sdk>=2.14.0       # X-Ray 연동
+
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-requests
+opentelemetry-instrumentation-botocore
+opentelemetry-instrumentation-boto3
+opentelemetry-propagator-aws-xray
+prometheus-client
+

@@ -15,6 +15,7 @@ env:
   AWS_SECURITY_GROUPS: ${{ secrets.AWS_SECURITY_GROUPS }} # "sg-xxx,sg-yyy"
   CLUSTER_NAME: ecs-cluster
   SERVICES: account-service,transaction-service,user-service,sqs-service,fcm-service
+  ADOT_REPO: adot-collector
 
 jobs:
   deploy:
@@ -38,31 +39,46 @@ jobs:
         run: |
           set -Eeuo pipefail
           sudo apt-get update -y
-          sudo apt-get install -y jq gettext-base  # envsubst 제공 패키지
+          sudo apt-get install -y jq gettext-base
           echo "::add-mask::${AWS_ACCOUNT_ID}"
 
       - name: Ensure ECS Cluster Exists (robust)
         run: |
           set -Eeuo pipefail
           export AWS_DEFAULT_REGION="${AWS_REGION}"
-
-          ARN=$(aws ecs describe-clusters \
-            --clusters "$CLUSTER_NAME" \
-            --query 'clusters[0].clusterArn' \
-            --output text 2>/dev/null || echo "None")
-
-          if [ "$ARN" = "None" ] || [ -z "$ARN" ] || [ "$ARN" = "null" ]; then
-            echo "ECS cluster not found. Creating: $CLUSTER_NAME in $AWS_REGION"
-            aws ecs create-cluster --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null
-          else
-            echo "ECS cluster exists: $ARN"
+          STATUS=$(aws ecs describe-clusters --clusters "$CLUSTER_NAME" --query 'clusters[0].status' --output text 2>/dev/null || echo "MISSING")
+          if [ "$STATUS" = "MISSING" ] || [ "$STATUS" = "INACTIVE" ] || [ "$STATUS" = "None" ] || [ "$STATUS" = "null" ]; then
+            aws ecs create-cluster --cluster-name "$CLUSTER_NAME" >/dev/null
           fi
-
+          for i in {1..30}; do
+            STATUS=$(aws ecs describe-clusters --clusters "$CLUSTER_NAME" --query 'clusters[0].status' --output text 2>/dev/null || echo "MISSING")
+            [ "$STATUS" = "ACTIVE" ] && break
+            sleep 5
+          done
+          [ "$STATUS" = "ACTIVE" ] || { echo "❌ ECS cluster not ACTIVE"; exit 1; }
 
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build & Push Docker Images (paths aligned)
+      # 🔥 ADOT Collector 전용 이미지 빌드/푸시 (adotCollectorConfig 폴더)
+      - name: Build & Push ADOT Collector Image
+        run: |
+          set -Eeuo pipefail
+          REPO="${ADOT_REPO}"
+          aws ecr describe-repositories --repository-names "$REPO" >/dev/null 2>&1 || \
+          aws ecr create-repository --repository-name "$REPO"
+          ADOT_IMAGE_TAG="${GITHUB_SHA}"
+          export ADOT_IMAGE_TAG
+          ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO}"
+          docker buildx build --platform linux/amd64 \
+            -t "${REPO}:${ADOT_IMAGE_TAG}" -t "${REPO}:latest" "./adotCollectorConfig" --load
+          docker tag "${REPO}:${ADOT_IMAGE_TAG}" "${ECR_URI}:${ADOT_IMAGE_TAG}"
+          docker tag "${REPO}:latest"          "${ECR_URI}:latest"
+          docker push "${ECR_URI}:${ADOT_IMAGE_TAG}"
+          docker push "${ECR_URI}:latest"
+          echo "ADOT_IMAGE_TAG=${ADOT_IMAGE_TAG}" >> $GITHUB_ENV
+
+      - name: Build & Push Service Images
         run: |
           set -Eeuo pipefail
           IFS=',' read -ra services <<< "$SERVICES"
@@ -75,14 +91,10 @@ jobs:
               fcm-service)          BUILD_DIR="./fcm-service" ;;
               *) echo "Unknown service: $svc"; exit 1 ;;
             esac
-
-            # Ensure ECR repo
             aws ecr describe-repositories --repository-names "$svc" >/dev/null 2>&1 || \
             aws ecr create-repository --repository-name "$svc"
-
             IMAGE_SHA_TAG="${GITHUB_SHA}"
             ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${svc}"
-
             docker buildx build --platform linux/amd64 \
               -t "${svc}:${IMAGE_SHA_TAG}" -t "${svc}:latest" "${BUILD_DIR}" --load
             docker tag "${svc}:${IMAGE_SHA_TAG}" "${ECR_URI}:${IMAGE_SHA_TAG}"
@@ -95,6 +107,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           IFS=',' read -ra services <<< "$SERVICES"
+          # ADOT 이미지는 공개 베이스이지만, 원한다면 함께 스캔
+          services+=("${ADOT_REPO}")
           for svc in "${services[@]}"; do
             aws ecr start-image-scan --repository-name "$svc" --image-id imageTag=latest || true
             sleep 10
@@ -110,52 +124,46 @@ jobs:
             fi
           done
 
-      - name: Mirror AWS X-Ray Daemon to Private ECR
+      # ✅ CloudWatch 로그그룹 사전 생성 (존재 시 무시)
+      - name: Ensure CloudWatch Log Groups
         run: |
           set -Eeuo pipefail
-          REPO_NAME="xray-daemon"
-          IMAGE_TAG="3.x"
-          ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}:${IMAGE_TAG}"
-          aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1 || \
-          aws ecr create-repository --repository-name "$REPO_NAME"
+          create_lg () {
+            local name="$1"
+            aws logs describe-log-groups --log-group-name-prefix "$name" --query 'logGroups[?logGroupName==`'"$name"'`]' --output text | grep -q "$name" || \
+            aws logs create-log-group --log-group-name "$name"
+          }
+          # 서비스별
+          create_lg "/ecs/account-service"
+          create_lg "/ecs/transaction-service"
+          create_lg "/ecs/user-service"
+          create_lg "/ecs/sqs-service"
+          create_lg "/ecs/fcm-service"
+          # ADOT
+          create_lg "/ecs/adot-collector"
 
-          # 이미지 존재 여부 확인
-          IMAGE_EXISTS=$(aws ecr describe-images --repository-name "$REPO_NAME" --image-ids imageTag="$IMAGE_TAG" --query 'length(imageDetails)' --output text 2>/dev/null || echo 0)
-
-          if [ "$IMAGE_EXISTS" -eq 0 ]; then
-            echo "X-Ray Daemon 이미지가 ECR에 없으므로 Pull 후 Push 합니다."
-            docker pull public.ecr.aws/xray/aws-xray-daemon:${IMAGE_TAG}
-            docker tag public.ecr.aws/xray/aws-xray-daemon:${IMAGE_TAG} "$ECR_URI"
-            docker push "$ECR_URI"
-          else
-            echo "X-Ray Daemon 이미지가 이미 ECR에 존재합니다. Pull/Push 건너뜀."
-          fi
-
-      # 🔥 핵심: 자리표시자 → 실제값 렌더 & 등록
-      - name: Render & Register Task Definitions (envsubst)
+      # 🔥 자리표시자 → 실제값 렌더 & 등록 (ADOT_IMAGE_TAG 포함)
+      - name: Render & Register Task Definitions
         run: |
           set -Eeuo pipefail
-          IMAGE_TAG="${GITHUB_SHA}"   # 배포 이미지 태그 = 이번 커밋
-          export AWS_ACCOUNT_ID AWS_REGION IMAGE_TAG
-
+          IMAGE_TAG="${GITHUB_SHA}"
+          export AWS_ACCOUNT_ID AWS_REGION IMAGE_TAG ADOT_IMAGE_TAG
           IFS=',' read -ra services <<< "$SERVICES"
           for svc in "${services[@]}"; do
             base="${svc%-service}"  # account-service -> account
             SRC="./task-definition/${base}-task-definition.json"
             OUT="./task-definition/__rendered_${base}.json"
             [ -f "$SRC" ] || { echo "Task definition not found: $SRC"; exit 1; }
-
-            # ${AWS_ACCOUNT_ID}, ${AWS_REGION}, ${IMAGE_TAG} 치환
-            envsubst '$AWS_ACCOUNT_ID,$AWS_REGION,$IMAGE_TAG' < "$SRC" > "$OUT"
-
-            # 등록
+            # ${AWS_ACCOUNT_ID}, ${AWS_REGION}, ${IMAGE_TAG}, ${ADOT_IMAGE_TAG} 치환
+            envsubst '$AWS_ACCOUNT_ID,$AWS_REGION,$IMAGE_TAG,$ADOT_IMAGE_TAG' < "$SRC" > "$OUT"
+            # 유효성(간단) 검사
+            jq . "$OUT" >/dev/null
             aws ecs register-task-definition --cli-input-json "file://$OUT"
           done
 
       - name: Create or Update ECS Services (private subnets only)
         run: |
           set -Eeuo pipefail
-
           NET_CONFIG=$(jq -n \
             --arg subs "$AWS_SUBNETS" \
             --arg sgs  "$AWS_SECURITY_GROUPS" \
@@ -166,15 +174,12 @@ jobs:
                 assignPublicIp: "DISABLED"
               }
             }')
-          
-          
 
           IFS=',' read -ra services <<< "$SERVICES"
           for svc in "${services[@]}"; do
             TASK_DEF_NAME="${svc%-service}-task"
             STATUS=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$svc" --region "$AWS_REGION" --query "services[0].status" --output text 2>/dev/null || echo "NONE")
             if [ "$STATUS" = "ACTIVE" ]; then
-              LATEST_TD=$(aws ecs describe-task-definition --task-definition "$TASK_DEF_NAME" --region "$AWS_REGION" --query "taskDefinition.taskDefinitionArn" --output text)
               aws ecs update-service \
                 --cluster "$CLUSTER_NAME" \
                 --region "$AWS_REGION" \
