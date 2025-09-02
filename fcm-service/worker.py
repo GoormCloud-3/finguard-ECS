@@ -9,6 +9,24 @@ import boto3
 from botocore.config import Config
 from firebase_admin import credentials, initialize_app, messaging
 
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# ---------- Health ----------
+
+HEALTH_PORT = int(os.getenv("HEALTH_PORT", "9400"))
+
+class _Health(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+        else:
+            self.send_response(404); self.end_headers()
+
+def _start_health_server():
+    srv = HTTPServer(("0.0.0.0", HEALTH_PORT), _Health)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
 # ---------- Logging ----------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -221,4 +239,5 @@ def run_forever():
     logger.info("👋 안전 종료 완료")
 
 if __name__ == "__main__":
+    _start_health_server()
     run_forever()
