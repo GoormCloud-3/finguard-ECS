@@ -4,14 +4,18 @@ import logging
 import time
 import signal
 import io
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import boto3
 import pandas as pd
 from botocore.config import Config
 
-# OpenTelemetry (X-Ray SDK 제거)
+# OpenTelemetry
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
+from opentelemetry.propagate import extract
+from opentelemetry.propagators.textmap import Getter
 
 # ───────────────────────── 기본 설정 ─────────────────────────
 region = "ap-northeast-2"
@@ -30,6 +34,7 @@ sagemaker_client  = boto3.client("sagemaker-runtime", region_name=region, config
 sns_client        = boto3.client("sns",               region_name=region, config=_boto_cfg)
 sqs_client        = boto3.client("sqs",               region_name=region, config=_boto_cfg)
 s3_client         = boto3.client("s3",                region_name=region, config=_boto_cfg)
+sts_client        = boto3.client("sts",               region_name=region, config=_boto_cfg)
 
 sageMakerEndpoint = None
 topicArn          = None
@@ -52,8 +57,76 @@ signal.signal(signal.SIGINT,  _handle_sigterm)
 # OpenTelemetry Tracer
 tracer = trace.get_tracer("sqs-service")
 
-# ─────────────────────── 헬퍼 ───────────────────────
+# ─────────────────────── 헬스 서버 (ECS healthcheck 용) ───────────────────────
+class _Health(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+        else:
+            self.send_response(404); self.end_headers()
 
+def _start_health_server():
+    srv = HTTPServer(("0.0.0.0", 9400), _Health)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+# ─────────────────────── 컨텍스트 추출 Getter ───────────────────────
+class _AttrGetter(Getter):
+    def get(self, carrier, key):
+        # 대소문자 혼용 방지
+        if not carrier or not key:
+            return []
+        # 일반화된 조회
+        for k in (key, key.lower(), key.upper(), key.title()):
+            if k in carrier:
+                v = carrier[k]
+                if v is None:
+                    return []
+                return [v] if isinstance(v, str) else [str(v)]
+        return []
+    def keys(self, carrier):
+        return list(carrier.keys()) if carrier else []
+
+def _extract_ctx_from_sqs(msg: dict):
+    """
+    SQS 메시지에서 OTel/X-Ray 컨텍스트 복원:
+    - SQS MessageAttributes (traceparent, baggage, X-Amzn-Trace-Id 등)
+    - SNS -> SQS 인 경우 Body(SNS envelope)의 MessageAttributes 도 검사
+    """
+    carrier = {}
+
+    # 1) SQS MessageAttributes: { Name : {DataType:String, StringValue: "..."} }
+    attrs = (msg.get("MessageAttributes") or {})
+    for k, v in attrs.items():
+        if isinstance(v, dict) and "StringValue" in v:
+            carrier[k] = v["StringValue"]
+
+    # 2) SNS envelope 내부 MessageAttributes: { Name : {Type: "String", Value: "..."} }
+    try:
+        body = json.loads(msg.get("Body") or "{}")
+        if isinstance(body, dict):
+            sns_attrs = body.get("MessageAttributes") or {}
+            for k, v in sns_attrs.items():
+                if isinstance(v, dict):
+                    if "Value" in v:
+                        carrier.setdefault(k, v["Value"])
+                    elif "StringValue" in v:
+                        carrier.setdefault(k, v["StringValue"])
+    except Exception:
+        # Body가 JSON이 아닐 수도 있음
+        pass
+
+    # 흘러온 키들 중 표준 키 우선 확보
+    norm = {}
+    for k, v in carrier.items():
+        lk = k.lower()
+        if lk in ("x-amzn-trace-id", "traceparent", "baggage"):
+            norm[k] = v
+    if not norm and carrier:
+        norm = carrier  # 혹시 표준 키 없이 들어온 경우도 최후 시도
+
+    return extract(_AttrGetter(), norm)
+
+# ─────────────────────── 헬퍼 ───────────────────────
 def get_param(name, with_decryption=False):
     with tracer.start_as_current_span("ssm.get_parameter") as span:
         span.set_attribute("param.name", name)
@@ -84,7 +157,7 @@ def init():
         initialized = True
         logging.info("✅ Initialized: endpoint=%s, topic=%s, table=%s, queue=%s, s3_bucket=%s, s3_key=%s",
                      sageMakerEndpoint, topicArn, tableName, queue_url, s3_bucket, s3_key)
-    except Exception as e:
+    except Exception:
         logging.exception("❌ Initialization failed")
         time.sleep(10)  # 상위에서 재시도
 
@@ -145,7 +218,7 @@ def publish_sns(fcm_tokens):
         span.set_attribute("sns.topic", topicArn or "")
         if not fcm_tokens:
             return
-        # boto3/botocore 계측이 켜져 있으면 **전파 헤더(traceparent/xray)**는 자동으로 MessageAttributes에 주입됨
+        # botocore 계측이 켜져 있으면 traceparent/X-Ray 헤더 자동 주입
         sns_client.publish(
             TopicArn=topicArn,
             Message=json.dumps({"fcmTokens": fcm_tokens}),
@@ -215,9 +288,18 @@ def process_message(record: dict):
             return
 
 # ─────────────────────────── 메인 루프 ───────────────────────────
-
 def main():
+    # 로깅
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    _start_health_server()
+
+    # 누가 실행 중인지(역할 확인)
+    try:
+        arn = sts_client.get_caller_identity()["Arn"]
+        logging.info(f"👤 STS caller identity: {arn}")
+    except Exception as e:
+        logging.warning(f"STS whoami failed: {e}")
+
     logging.info("🚀 SQS receive Worker started")
 
     # --- 초기화 재시도 루프 ---
@@ -239,9 +321,14 @@ def main():
                 continue
 
             for msg in messages:
-                # 메시지 단위 처리 (상위 span과 중첩되어도 문제 없음)
-                process_message(msg)
-                delete_message(msg["ReceiptHandle"])
+                # 1) 메시지에서 컨텍스트 복원
+                ctx = _extract_ctx_from_sqs(msg)
+
+                # 2) 복원 컨텍스트로 "메시지 단위" 루트 스팬 시작
+                with tracer.start_as_current_span("sqs.process_message", context=ctx) as span:
+                    span.set_attribute("sqs.message_id", msg.get("MessageId", ""))
+                    process_message(msg)
+                    delete_message(msg.get("ReceiptHandle", ""))
 
         except Exception:
             logging.exception("Error receiving messages")
