@@ -1,81 +1,34 @@
-# /etc/ecs/ecs-otel-config.yaml
 receivers:
   otlp:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
-      http:
-        endpoint: 0.0.0.0:4318
-
-  # (선택) ECS/Fargate 리소스 메트릭 수집 (CPU/메모리/네트워크 등)
-  awscontainerinsightreceiver:
-    collection_interval: 60s
-    add_full_pod_name_metric_label: true
-
-  # (선택) 앱의 /metrics 스크레이프
-  prometheus:
-    config:
-      scrape_configs:
-        - job_name: "app-metrics"
-          scrape_interval: 15s
-          static_configs:
-            # 같은 태스크 안의 앱 컨테이너가 8000 포트에서 /metrics 노출한다고 가정
-            - targets: ["127.0.0.1:8000"]
-              labels:
-                service: "account-service"
-          metric_relabel_configs:
-            - source_labels: [__name__]
-              regex: "process_.+|python_.+"
-              action: drop   # 원치 않는 런타임 메트릭 드랍 예시
 
 processors:
   memory_limiter:
     check_interval: 1s
-    limit_mib: 512
-    spike_limit_mib: 256
+    limit_mib: 256
+    spike_limit_mib: 128
   batch:
-    timeout: 5s
-    send_batch_size: 1024
+    timeout: 2s
+    send_batch_size: 512
   resourcedetection:
     detectors: [ecs, env]
     timeout: 2s
     override: true
 
 exporters:
-  # 트레이스 → X-Ray
   awsxray: {}
-
-  # (선택) 메트릭 → CloudWatch(EMF)
-  awsemf:
-    namespace: "finguard/app"
-    log_group_name: "/aws/otel/finguard"   # 자동 생성 안 됨 → 미리 생성 권장
-    log_stream_name: "adot-emf"
-    resource_to_telemetry_conversion:
-      enabled: true
-
-  # (선택) 메트릭 → AMP(Prometheus Remote Write)
-  prometheusremotewrite:
-    endpoint: "https://aps-workspaces.ap-northeast-2.amazonaws.com/workspaces/<YOUR_WS_ID>/api/v1/remote_write"
-    auth:
-      authenticator: sigv4auth
-
-  logging:
-    loglevel: warn
+  debug:    # ← 기존 logging 대신 사용
+    verbosity: basic
 
 extensions:
   health_check: {}
-  sigv4auth:
-    region: "ap-northeast-2"
-    service: "aps"        # AMP에 서명 요청
 
 service:
-  extensions: [health_check, sigv4auth]
+  extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, resourcedetection, batch]
-      exporters: [awsxray]
-    metrics:
-      receivers: [awscontainerinsightreceiver, prometheus]
-      processors: [resourcedetection, batch]
-      exporters: [prometheusremotewrite, awsemf]
+      exporters: [awsxray, debug]
