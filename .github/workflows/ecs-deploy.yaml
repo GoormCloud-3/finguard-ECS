@@ -19,6 +19,7 @@ env:
   TG_ACCOUNT_ARN: ${{ secrets.TG_ACCOUNT_ARN }}
   TG_USER_ARN: ${{ secrets.TG_USER_ARN }}
   TG_TRANSACTION_ARN: ${{ secrets.TG_TRANSACTION_ARN }}
+  AMP_WORKSPACE_ID: ${{ secrets.AMP_WORKSPACE_ID }}
 
 jobs:
   deploy:
@@ -150,7 +151,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           IMAGE_TAG="${GITHUB_SHA}"
-          export AWS_ACCOUNT_ID AWS_REGION IMAGE_TAG ADOT_IMAGE_TAG
+          export AWS_ACCOUNT_ID AWS_REGION IMAGE_TAG ADOT_IMAGE_TAG AMP_WORKSPACE_ID
           IFS=',' read -ra services <<< "$SERVICES"
           for svc in "${services[@]}"; do
             base="${svc%-service}"  # account-service -> account
@@ -158,7 +159,7 @@ jobs:
             OUT="./task-definition/__rendered_${base}.json"
             [ -f "$SRC" ] || { echo "Task definition not found: $SRC"; exit 1; }
             # ${AWS_ACCOUNT_ID}, ${AWS_REGION}, ${IMAGE_TAG}, ${ADOT_IMAGE_TAG} 치환
-            envsubst '$AWS_ACCOUNT_ID,$AWS_REGION,$IMAGE_TAG,$ADOT_IMAGE_TAG' < "$SRC" > "$OUT"
+            envsubst '$AWS_ACCOUNT_ID,$AWS_REGION,$IMAGE_TAG,$ADOT_IMAGE_TAG,$AMP_WORKSPACE_ID' < "$SRC" > "$OUT"
             # 유효성(간단) 검사
             jq . "$OUT" >/dev/null
             aws ecs register-task-definition --cli-input-json "file://$OUT"

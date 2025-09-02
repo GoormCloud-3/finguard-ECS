@@ -47,7 +47,8 @@
       "essential": false,
       "command": ["/awscollector","--config=/etc/ecs/ecs-otel-config.yaml"],
       "environment": [
-        { "name": "AWS_REGION", "value": "${AWS_REGION}" }
+        { "name": "AWS_REGION", "value": "${AWS_REGION}" },
+        { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",

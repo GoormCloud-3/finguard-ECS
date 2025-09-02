@@ -15,3 +15,7 @@ opentelemetry-instrumentation-requests==0.47b0
 opentelemetry-instrumentation-botocore==0.47b0
 
 prometheus-client==0.20.0
+
+
+opentelemetry-instrumentation==0.47b0
+opentelemetry-instrumentation-asgi

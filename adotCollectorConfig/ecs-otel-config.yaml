@@ -1,37 +1,48 @@
+extensions:
+  health_check:
+  sigv4auth:
+    region: ap-northeast-2
+  ecs_observer:
+    cluster_name: ecs-cluster
+    refresh_interval: 30s
+    result_file: /etc/ecs/ecs_sd_targets.yaml
+
 receivers:
   otlp:
-    protocols:
-      grpc:
-        endpoint: 0.0.0.0:4317
+    protocols: { grpc: {} }
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: ecs-sd
+          file_sd_configs:
+            - files: [ /etc/ecs/ecs_sd_targets.yaml ]
+          metrics_path: /metrics
 
 processors:
-  memory_limiter:
-    check_interval: 1s
-    limit_mib: 256
-    spike_limit_mib: 128
-  batch:
-    timeout: 2s
-    send_batch_size: 512
+  batch: {}
   resourcedetection:
-    detectors: [ecs, env]
+    detectors: [env, ecs]
     timeout: 2s
-    override: true
 
 exporters:
   awsxray: {}
-  debug:    # ← 기존 logging 대신 사용
-    verbosity: basic
-
-extensions:
-  health_check: {}
+  awsprometheusremotewrite:
+    endpoint: https://aps-workspaces.${env:AWS_REGION}.amazonaws.com/workspaces/${env:AMP_WORKSPACE_ID}/api/v1/remote_write
+    auth:
+      authenticator: sigv4auth
+  # debug: {}  # 임시 디버깅 시만
 
 service:
   telemetry:
     logs:
-      level: warn
-  extensions: [health_check]
+      level: warn   # ← “extracfg.txt” 같은 정보 로그 잠재움
+  extensions: [health_check, ecs_observer, sigv4auth]
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, resourcedetection, batch]
+      processors: [resourcedetection, batch]
       exporters: [awsxray]
+    metrics:
+      receivers: [prometheus]
+      processors: [resourcedetection, batch]
+      exporters: [awsprometheusremotewrite]
