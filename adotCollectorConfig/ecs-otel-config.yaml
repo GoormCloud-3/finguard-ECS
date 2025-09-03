@@ -1,46 +1,45 @@
 extensions:
   health_check:
   sigv4auth:
-    region: ap-northeast-2
+    region: ${env:AWS_REGION}
   ecs_observer:
     cluster_name: ecs-cluster
     refresh_interval: 30s
     result_file: /etc/ecs/ecs_sd_targets.yaml
     services:
-      # user/account/transaction만 /metrics 긁어오기
-      - name_pattern: ".*(user|account|transaction|fcm|sqs)-service"
+      - name_pattern: ".*(user|account|fcm|sqs|transaction)-service"
         metrics_ports: [8000]
         metrics_path: /metrics
 
 receivers:
   otlp:
-    protocols: { grpc: {} }
+    protocols:
+      grpc: {}
   prometheus:
     config:
       scrape_configs:
-        - job_name: ecs-sd
+        - job_name: "ecs-sd"
           file_sd_configs:
             - files: [ /etc/ecs/ecs_sd_targets.yaml ]
           metrics_path: /metrics
 
 processors:
-  batch: {}
   resourcedetection:
     detectors: [env, ecs]
     timeout: 2s
+  batch: {}
 
 exporters:
   awsxray: {}
-  awsprometheusremotewrite:
+  prometheusremotewrite:
     endpoint: https://aps-workspaces.${env:AWS_REGION}.amazonaws.com/workspaces/${env:AMP_WORKSPACE_ID}/api/v1/remote_write
     auth:
       authenticator: sigv4auth
-  # debug: {}  # 임시 디버깅 시만
 
 service:
   telemetry:
     logs:
-      level: warn   # ← “extracfg.txt” 같은 정보 로그 잠재움
+      level: warn   # 잡다한 정보 로그 억제
   extensions: [health_check, ecs_observer, sigv4auth]
   pipelines:
     traces:
@@ -50,4 +49,4 @@ service:
     metrics:
       receivers: [prometheus]
       processors: [resourcedetection, batch]
-      exporters: [awsprometheusremotewrite]
+      exporters: [prometheusremotewrite]
