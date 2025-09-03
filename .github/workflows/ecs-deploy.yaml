@@ -61,6 +61,22 @@ jobs:
           done
           [ "$STATUS" = "ACTIVE" ] || { echo "❌ ECS cluster not ACTIVE"; exit 1; }
 
+      - name: Enable ECS Container Insights (cluster-level)
+        run: |
+          set -Eeuo pipefail
+          CUR=$(aws ecs describe-clusters \
+            --clusters "$CLUSTER_NAME" \
+            --query "clusters[0].settings[?name=='containerInsights'].value" \
+            --output text 2>/dev/null || echo "disabled")
+          if [ "$CUR" != "enabled" ]; then
+            echo "Enabling Container Insights on cluster: $CLUSTER_NAME"
+            aws ecs update-cluster-settings \
+              --cluster "$CLUSTER_NAME" \
+              --settings name=containerInsights,value=enabled
+          else
+            echo "Container Insights already enabled."
+          fi
+
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 

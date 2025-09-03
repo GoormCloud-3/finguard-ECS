@@ -48,7 +48,9 @@
       "command": ["/awscollector","--config=/etc/ecs/ecs-otel-config.yaml"],
       "environment": [
         { "name": "AWS_REGION", "value": "${AWS_REGION}" },
-        { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" }
+        { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" },
+        { "name": "AWS_RETRY_MODE", "value": "standard" },  
+        { "name": "AWS_MAX_ATTEMPTS", "value": "2" }  
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
