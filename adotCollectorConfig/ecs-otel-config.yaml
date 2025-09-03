@@ -6,6 +6,11 @@ extensions:
     cluster_name: ecs-cluster
     refresh_interval: 30s
     result_file: /etc/ecs/ecs_sd_targets.yaml
+    services:
+      # user/account/transaction만 /metrics 긁어오기
+      - name_pattern: ".*(user|account|transaction|fcm|sqs)-service"
+        metrics_ports: [8000]
+        metrics_path: /metrics
 
 receivers:
   otlp:
