@@ -5,7 +5,7 @@ extensions:
   ecs_observer:
     cluster_name: ecs-cluster
     refresh_interval: 30s
-    result_file: /etc/ecs/ecs_sd_targets.yaml
+    result_file: /tmp/ecs_sd_targets.yaml
     services:
       - name_pattern: ".*(user|account|fcm|sqs|transaction)-service"
         metrics_ports: [8000]
@@ -20,7 +20,7 @@ receivers:
       scrape_configs:
         - job_name: "ecs-sd"
           file_sd_configs:
-            - files: [ /etc/ecs/ecs_sd_targets.yaml ]
+            - files: [ /tmp/ecs_sd_targets.yaml ]
           metrics_path: /metrics
 
 processors:
