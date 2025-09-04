@@ -10,8 +10,6 @@
     { "name": "ecs-sd-vol" }  
   ],
   "containerDefinitions": [
-{
-  "containerDefinitions": [
     {
       "name": "adot-collector",
       "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest",
@@ -63,8 +61,5 @@
       },
       "essential": true
     }
-  ]
-}
-
   ]
 }
