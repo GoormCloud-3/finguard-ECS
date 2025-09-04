@@ -52,18 +52,28 @@
         "startPeriod": 10
       }
     },
-{
-  "name": "adot-collector",
-  "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest", 
-  "command": ["--config=/etc/otel/ecs-otel-config.yaml"],
-  "mountPoints": [
-    { "sourceVolume": "ecs-sd-vol", "containerPath": "/etc/ecs-sd", "readOnly": false }
-  ],
-  "environment": [
-    { "name": "AWS_REGION", "value": "${AWS_REGION}" },
-    { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" }
-  ],
-  "essential": true
-}
+    {
+      "name": "adot-collector",
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest", 
+      "command": ["--config=/etc/otel/ecs-otel-config.yaml"],
+      "mountPoints": [
+        { "sourceVolume": "ecs-sd-vol", "containerPath": "/etc/ecs-sd", "readOnly": false }
+      ],
+      "environment": [
+        { "name": "AWS_REGION", "value": "${AWS_REGION}" },
+        { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" }
+      ],
+      "essential": true,
+        "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/adot-collector",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      }
+  
+    }
   ]
 }
