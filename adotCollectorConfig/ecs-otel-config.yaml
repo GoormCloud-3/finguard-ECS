@@ -4,9 +4,7 @@ extensions:
     region: ${env:AWS_REGION}
   ecs_observer:
     cluster_name: ecs-cluster
-    region: ${env:AWS_REGION}
     refresh_interval: 30s
-    # 볼륨 마운트된 경로로 통일
     result_file: /etc/ecs-sd/targets.yaml
     services:
       - name_pattern: ".*(user|account|fcm|sqs|transaction)-service"
@@ -42,19 +40,17 @@ exporters:
   prometheusremotewrite:
     endpoint: https://aps-workspaces.${env:AWS_REGION}.amazonaws.com/workspaces/${env:AMP_WORKSPACE_ID}/api/v1/remote_write
     auth:
-      authenticator: sigv4auth   # ← 이름 일치 (중요)
+      authenticator: sigv4auth
     tls:
       insecure_skip_verify: true
     external_labels:
       cluster: ecs-cluster
-  logging:
-    loglevel: info
+  debug:  # logging exporter는 폐기됨 → debug로 대체
 
 service:
   telemetry:
     logs:
       level: warn
-  # 정의한 확장을 실제로 활성화 (중요)
   extensions: [health_check, sigv4auth, ecs_observer]
   pipelines:
     traces:
@@ -64,4 +60,4 @@ service:
     metrics:
       receivers: [prometheus]
       processors: [batch]
-      exporters: [prometheusremotewrite, logging]
+      exporters: [prometheusremotewrite, debug]
