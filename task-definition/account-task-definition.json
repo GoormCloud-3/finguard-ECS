@@ -46,7 +46,7 @@
     },
 {
   "name": "adot-collector",
-  "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ADOT_REPO}:${ADOT_IMAGE_TAG}",
+  "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest", 
   "command": ["--config=/etc/otel/ecs-otel-config.yaml"],
   "mountPoints": [
     { "sourceVolume": "ecs-sd-vol", "containerPath": "/etc/ecs-sd", "readOnly": false }
