@@ -1,11 +1,13 @@
 extensions:
-  health_check:
+  health_check: {}
   sigv4auth:
     region: ${env:AWS_REGION}
   ecs_observer:
     cluster_name: ecs-cluster
+    region: ${env:AWS_REGION}
     refresh_interval: 30s
-    result_file: /tmp/ecs_sd_targets.yaml
+    # 볼륨 마운트된 경로로 통일
+    result_file: /etc/ecs-sd/targets.yaml
     services:
       - name_pattern: ".*(user|account|fcm|sqs|transaction)-service"
         metrics_ports: [8000]
@@ -15,13 +17,19 @@ receivers:
   otlp:
     protocols:
       grpc: {}
+      http: {}
   prometheus:
     config:
+      global:
+        scrape_interval: 30s
       scrape_configs:
-        - job_name: "ecs-sd"
+        - job_name: ecs-sd
           file_sd_configs:
-            - files: [ /tmp/ecs_sd_targets.yaml ]
+            - files: [ /etc/ecs-sd/targets.yaml ]
           metrics_path: /metrics
+          relabel_configs:
+            - action: labelmap
+              regex: __meta_(.+)
 
 processors:
   resourcedetection:
@@ -34,13 +42,20 @@ exporters:
   prometheusremotewrite:
     endpoint: https://aps-workspaces.${env:AWS_REGION}.amazonaws.com/workspaces/${env:AMP_WORKSPACE_ID}/api/v1/remote_write
     auth:
-      authenticator: sigv4auth
+      authenticator: sigv4auth   # ← 이름 일치 (중요)
+    tls:
+      insecure_skip_verify: true
+    external_labels:
+      cluster: ecs-cluster
+  logging:
+    loglevel: info
 
 service:
   telemetry:
     logs:
-      level: warn   # 잡다한 정보 로그 억제
-  extensions: [health_check, ecs_observer, sigv4auth]
+      level: warn
+  # 정의한 확장을 실제로 활성화 (중요)
+  extensions: [health_check, sigv4auth, ecs_observer]
   pipelines:
     traces:
       receivers: [otlp]
@@ -48,5 +63,5 @@ service:
       exporters: [awsxray]
     metrics:
       receivers: [prometheus]
-      processors: [resourcedetection, batch]
-      exporters: [prometheusremotewrite]
+      processors: [batch]
+      exporters: [prometheusremotewrite, logging]
