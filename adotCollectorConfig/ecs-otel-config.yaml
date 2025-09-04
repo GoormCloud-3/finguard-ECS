@@ -4,36 +4,19 @@ extensions:
     region: ${env:AWS_REGION}
 
 receivers:
+  otlp:
+    protocols:
+      grpc: {}
+      http: {}
   prometheus:
     config:
       global:
         scrape_interval: 30s
       scrape_configs:
-        - job_name: account-service
+        - job_name: sidecar
           static_configs:
-            - targets: [ "account-service:${env:METRICS_PORT}" ]
+            - targets: [ "127.0.0.1:${env:METRICS_PORT}" ]  # ← 자기 앱만
           metrics_path: /metrics
-
-        - job_name: sqs-service
-          static_configs:
-            - targets: [ "sqs-service:${env:METRICS_PORT}" ]
-          metrics_path: /metrics
-
-        - job_name: user-service
-          static_configs:
-            - targets: [ "user-service:${env:METRICS_PORT}" ]
-          metrics_path: /metrics
-
-        - job_name: transaction-service
-          static_configs:
-            - targets: [ "transaction-service:${env:METRICS_PORT}" ]
-          metrics_path: /metrics
-
-        - job_name: fcm-service
-          static_configs:
-            - targets: [ "fcm-service:${env:METRICS_PORT}" ]
-          metrics_path: /metrics
-
 
 processors:
   resourcedetection:
@@ -48,7 +31,7 @@ exporters:
     auth:
       authenticator: sigv4auth
     tls:
-      insecure_skip_verify: true
+      insecure_skip_verify: true   # 가능하면 제거 권장
     external_labels:
       cluster: ecs-cluster
   debug: {}
