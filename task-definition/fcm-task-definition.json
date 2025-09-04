@@ -54,17 +54,26 @@
     },
     {
       "name": "adot-collector",
-      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest", 
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest",
+      "user": "0",
+      "readonlyRootFilesystem": false,
       "command": ["--config=/etc/otel/ecs-otel-config.yaml"],
       "mountPoints": [
-        { "sourceVolume": "ecs-sd-vol", "containerPath": "/etc/ecs-sd", "readOnly": false }
+        { "sourceVolume": "ecs-sd-vol", "containerPath": "/tmp/ecs-sd", "readOnly": false }
       ],
       "environment": [
         { "name": "AWS_REGION", "value": "${AWS_REGION}" },
         { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" }
       ],
       "essential": true,
-        "logConfiguration": {
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://localhost:13133/ || exit 1"],
+        "interval": 10,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+      "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/adot-collector",
@@ -73,7 +82,6 @@
           "awslogs-create-group": "true"
         }
       }
-  
     }
   ]
 }
