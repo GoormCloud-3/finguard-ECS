@@ -10,53 +10,16 @@
     { "name": "ecs-sd-vol" }  
   ],
   "containerDefinitions": [
-    {
-      "name": "account-service",
-      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/account-service:${IMAGE_TAG}",
-      "essential": true,
-      "environment": [
-        { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
-        { "name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "http://127.0.0.1:4317" },
-        { "name": "OTEL_EXPORTER_OTLP_PROTOCOL", "value": "grpc" },
-        { "name": "OTEL_PROPAGATORS", "value": "xray" },
-        { "name": "OTEL_TRACES_SAMPLER", "value": "parentbased_always_on" },
-        { "name": "OTEL_RESOURCE_ATTRIBUTES", "value": "service.name=account-service,service.namespace=finguard" }
-      ],
-      "portMappings": [
-        {
-          "containerPort": 8000,
-          "protocol": "tcp"
-        }
-      ],
-      "logConfiguration": {
-        "logDriver": "awslogs",
-        "options": {
-          "awslogs-group": "/ecs/account-service",
-          "awslogs-region": "${AWS_REGION}",
-          "awslogs-stream-prefix": "ecs"
-        }
-      },
-      "healthCheck": {
-        "command": ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"],
-        "interval": 10,
-        "timeout": 5,
-        "retries": 3,
-        "startPeriod": 10
-      },
-      "dependsOn": [{ "containerName": "adot-collector", "condition": "HEALTHY" }]
-    },
+{
+  "containerDefinitions": [
     {
       "name": "adot-collector",
       "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest",
-      "user": "0",
-      "readonlyRootFilesystem": false,
       "command": ["--config=/etc/otel/ecs-otel-config.yaml"],
-      "mountPoints": [
-        { "sourceVolume": "ecs-sd-vol", "containerPath": "/tmp/ecs-sd", "readOnly": false }
-      ],
       "environment": [
         { "name": "AWS_REGION", "value": "${AWS_REGION}" },
-        { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" }
+        { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" },
+        { "name": "METRICS_PORT", "value": "8000" }     
       ],
       "healthCheck": {
         "command": ["CMD-SHELL","curl -sf http://localhost:13133/ || exit 1"],
@@ -72,7 +35,37 @@
         }
       },
       "essential": true
+    },
+    {
+      "name": "account-service",
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/account-service:${IMAGE_TAG}",
+      "dependsOn": [{ "containerName": "adot-collector", "condition": "HEALTHY" }],
+      "environment": [
+        { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
+        { "name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "http://127.0.0.1:4317" },
+        { "name": "OTEL_EXPORTER_OTLP_PROTOCOL", "value": "grpc" },
+        { "name": "OTEL_PROPAGATORS", "value": "xray" },
+        { "name": "OTEL_TRACES_SAMPLER", "value": "parentbased_always_on" },
+        { "name": "OTEL_RESOURCE_ATTRIBUTES", "value": "service.name=account-service,service.namespace=finguard" }
+      ],
+      "portMappings": [{ "containerPort": 8000, "protocol": "tcp" }],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/account-service",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"],
+        "interval": 10, "timeout": 5, "retries": 3, "startPeriod": 10
+      },
+      "essential": true
     }
+  ]
+}
+
 
   ]
 }
