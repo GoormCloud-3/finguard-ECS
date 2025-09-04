@@ -58,8 +58,7 @@
       "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest",
       "user": "0",
       "readonlyRootFilesystem": false,
-      "entryPoint": ["/bin/sh","-c"],
-      "command": ["mkdir -p /tmp/ecs-sd && exec /awsotel-collector --config=/etc/otel/ecs-otel-config.yaml"],
+      "command": ["--config=/etc/otel/ecs-otel-config.yaml"],
       "mountPoints": [
         { "sourceVolume": "ecs-sd-vol", "containerPath": "/tmp/ecs-sd", "readOnly": false }
       ],
