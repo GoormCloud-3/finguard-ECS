@@ -52,18 +52,18 @@
         "startPeriod": 10
       }
     },
-    {
-      "name": "adot-collector",
-      "image": "public.ecr.aws/aws-observability/aws-otel-collector:latest",
-      "command": ["--config=/etc/otel/ecs-otel-config.yaml"],
-      "mountPoints": [
-        { "sourceVolume": "ecs-sd-vol", "containerPath": "/etc/ecs-sd", "readOnly": false }
-      ],
-      "environment": [
-        { "name": "AWS_REGION", "value": "ap-northeast-2" },
-        { "name": "AMP_WORKSPACE_ID", "value": "<AMP_WORKSPACE_ID>" }
-      ],
-      "essential": true
-    }
+{
+  "name": "adot-collector",
+  "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ADOT_REPO}:${ADOT_IMAGE_TAG}",
+  "command": ["--config=/etc/otel/ecs-otel-config.yaml"],
+  "mountPoints": [
+    { "sourceVolume": "ecs-sd-vol", "containerPath": "/etc/ecs-sd", "readOnly": false }
+  ],
+  "environment": [
+    { "name": "AWS_REGION", "value": "${AWS_REGION}" },
+    { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" }
+  ],
+  "essential": true
+}
   ]
 }
