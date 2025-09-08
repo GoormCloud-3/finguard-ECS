@@ -124,7 +124,7 @@ def _extract_ctx_from_sqs(msg: dict):
     if not norm and carrier:
         norm = carrier  # 혹시 표준 키 없이 들어온 경우도 최후 시도
 
-    return extract(_AttrGetter(), norm)
+    return extract(norm, getter=_AttrGetter())
 
 # ─────────────────────── 헬퍼 ───────────────────────
 def get_param(name, with_decryption=False):
@@ -280,12 +280,13 @@ def process_message(record: dict):
             if result.get("prediction") == 1:
                 tokens = get_fcm_tokens(user_sub) if user_sub else []
                 publish_sns(tokens)
+            return True
             # else: 정상 거래
         except Exception as e:
             logging.exception("❌ Error during message processing")
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR, str(e)))
-            return
+            return False
 
 # ─────────────────────────── 메인 루프 ───────────────────────────
 def main():
@@ -327,8 +328,11 @@ def main():
                 # 2) 복원 컨텍스트로 "메시지 단위" 루트 스팬 시작
                 with tracer.start_as_current_span("sqs.process_message", context=ctx) as span:
                     span.set_attribute("sqs.message_id", msg.get("MessageId", ""))
-                    process_message(msg)
-                    delete_message(msg.get("ReceiptHandle", ""))
+                    check = process_message(msg)
+                    if check:
+                        delete_message(msg.get("ReceiptHandle", ""))
+                    else:
+                        pass
 
         except Exception:
             logging.exception("Error receiving messages")

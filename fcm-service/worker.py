@@ -85,29 +85,59 @@ class _SQSAttrGetter(Getter):
 _SQS_GETTER = _SQSAttrGetter()
 
 # ---------- Firebase credentials ----------
+# 위쪽 import에 추가
+import base64
+import boto3
+
+REGION = os.getenv("AWS_REGION", "ap-northeast-2")
+
 def _init_firebase_admin():
     """
-    우선순위: FIREBASE_SA_JSON(raw/base64 JSON) -> FIREBASE_CRED_FILE(경로)
+    우선순위:
+    1) FIREBASE_SA_JSON (raw JSON 또는 base64)
+    2) FIREBASE_SA_PARAM (SSM 파라미터 이름)  ← 백업 경로
+    3) FIREBASE_CRED_FILE (기본: service-account-key.json)
     """
     sa_env = os.getenv("FIREBASE_SA_JSON")
+    sa_param = os.getenv("FIREBASE_SA_PARAM")  # ex) /prod/firebase-service-account-json
+    file_path = os.getenv("FIREBASE_CRED_FILE", "service-account-key.json")
+
     try:
         if sa_env:
+            # 존재 여부만 로깅(내용 노출 금지)
+            logger.info("🔐 FIREBASE_SA_JSON detected (len=%d)", len(sa_env))
             try:
-                sa_dict = json.loads(sa_env)
+                cred_dict = json.loads(sa_env)
             except Exception:
-                import base64
-                sa_dict = json.loads(base64.b64decode(sa_env).decode("utf-8"))
-            cred = credentials.Certificate(sa_dict)
+                cred_dict = json.loads(base64.b64decode(sa_env).decode("utf-8"))
+            cred = credentials.Certificate(cred_dict)
             initialize_app(cred)
-            logger.info("🔐 Firebase initialized from FIREBASE_SA_JSON")
+            logger.info("✅ Firebase initialized from FIREBASE_SA_JSON")
             return
-        path = os.getenv("FIREBASE_CRED_FILE", "service-account-key.json")
-        cred = credentials.Certificate(path)
+
+        if sa_param:
+            logger.info("🔐 Fetching Firebase SA from SSM parameter: %s", sa_param)
+            ssm = boto3.client("ssm", region_name=REGION)
+            res = ssm.get_parameter(Name=sa_param, WithDecryption=True)
+            val = res["Parameter"]["Value"]
+            try:
+                cred_dict = json.loads(val)
+            except Exception:
+                cred_dict = json.loads(base64.b64decode(val).decode("utf-8"))
+            cred = credentials.Certificate(cred_dict)
+            initialize_app(cred)
+            logger.info("✅ Firebase initialized from SSM param")
+            return
+
+        logger.warning("⚠️ FIREBASE_SA_JSON & FIREBASE_SA_PARAM both missing; falling back to file: %s", file_path)
+        cred = credentials.Certificate(file_path)
         initialize_app(cred)
-        logger.info(f"📄 Firebase initialized from file: {path}")
+        logger.info("✅ Firebase initialized from file")
+
     except Exception as e:
-        logger.error(f"Firebase 초기화 실패: {e}")
+        logger.error("Firebase 초기화 실패: %s", e)
         raise
+
 
 # ---------- helpers ----------
 def mask_token(token: str | None) -> str | None:

@@ -14,7 +14,7 @@ receivers:
         - job_name: app
           scrape_interval: 15s
           static_configs:
-            - targets: ["0.0.0.0:8000"]  # 예: 8000
+            - targets: ["127.0.0.1:8000"]  # 예: 8000
           metrics_path: /metrics
   awsecscontainermetrics: {}
 
