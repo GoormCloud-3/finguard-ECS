@@ -22,6 +22,9 @@
         { "name": "ECS_CLUSTER_NAME", "value": "ecs-cluster" },
         { "name": "DEPLOY_ENV", "value": "prod" }
       ],
+      "mountPoints": [
+        { "sourceVolume": "ecs-sd-vol", "containerPath": "/tmp", "readOnly": false } 
+      ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {

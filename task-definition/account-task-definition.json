@@ -22,6 +22,9 @@
         { "name": "SERVICE_NAMESPACE", "value": "finguard" },
         { "name": "DEPLOY_ENV", "value": "prod" }
       ],
+      "mountPoints": [
+        { "sourceVolume": "ecs-sd-vol", "containerPath": "/tmp", "readOnly": false } 
+      ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {

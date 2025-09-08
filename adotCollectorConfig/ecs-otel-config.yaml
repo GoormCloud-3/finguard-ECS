@@ -18,6 +18,7 @@ receivers:
         - job_name: app
           file_sd_configs:
             - files: ["/tmp/ecs_sd_targets.yaml"]
+              refresh_interval: 30s
           relabel_configs:
             - source_labels: [__meta_ecs_container_name]
               regex: account-service|user-service|transaction-service|fcm-service|sqs-service
