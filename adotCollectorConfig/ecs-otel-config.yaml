@@ -1,52 +1,54 @@
 extensions:
-  health_check: {}
   sigv4auth:
-    region: ${env:AWS_REGION}
+    region: ${AWS_REGION}
 
 receivers:
   otlp:
     protocols:
-      grpc: {}
-      http: {}
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
   prometheus:
     config:
-      global:
-        scrape_interval: 30s
       scrape_configs:
-        - job_name: sidecar
+        - job_name: app
+          scrape_interval: 15s
           static_configs:
-            - targets: [ "127.0.0.1:${env:METRICS_PORT}" ]  # ← 자기 앱만
+            - targets: ["127.0.0.1:8000"]  # 예: 8000
           metrics_path: /metrics
 
 processors:
-  resourcedetection:
-    detectors: [env, ecs]
-    timeout: 2s
-  batch: {}
+  batch:
+  resource:
+    attributes:
+      - key: service.namespace
+        action: upsert
+        value: ${SERVICE_NAMESPACE}
+      - key: deployment.environment
+        action: upsert
+        value: ${DEPLOY_ENV}
 
 exporters:
-  awsxray: {}
-  prometheusremotewrite:
-    endpoint: https://aps-workspaces.${env:AWS_REGION}.amazonaws.com/workspaces/${env:AMP_WORKSPACE_ID}/api/v1/remote_write
+  awsxray: {}                # 트레이스 → X-Ray
+  prometheusremotewrite:     # 메트릭 → AMP
+    endpoint: https://aps-workspaces.${AWS_REGION}.amazonaws.com/workspaces/${AMP_WORKSPACE_ID}/api/v1/remote_write
     auth:
       authenticator: sigv4auth
-    tls:
-      insecure_skip_verify: true   # 가능하면 제거 권장
-    external_labels:
-      cluster: ecs-cluster
-  debug: {}
+  awscloudwatchlogs:         # (선택) 로그 → CloudWatch Logs
+    log_group_name: /ecs/app-otlp-logs
+    region: ${AWS_REGION}
 
 service:
-  telemetry:
-    logs:
-      level: warn
-  extensions: [health_check, sigv4auth]
+  extensions: [sigv4auth]
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [resourcedetection, batch]
+      processors: [resource, batch]
       exporters: [awsxray]
     metrics:
-      receivers: [prometheus]
-      processors: [batch]
-      exporters: [prometheusremotewrite, debug]
+      receivers: [otlp, prometheus]
+      processors: [resource, batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [awscloudwatchlogs]
