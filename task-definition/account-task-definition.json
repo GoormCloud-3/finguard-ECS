@@ -16,6 +16,7 @@
       "command": ["--config=/etc/ecs/otel-config.yaml"],
       "environment": [
         { "name": "AWS_REGION", "value": "${AWS_REGION}" },
+        { "name": "ECS_CLUSTER_NAME", "value": "ecs-cluster" },
         { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" },
         { "name": "METRICS_PORT", "value": "8000" },
         { "name": "SERVICE_NAMESPACE", "value": "finguard" },

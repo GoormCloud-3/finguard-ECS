@@ -19,6 +19,7 @@
         { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" },
         { "name": "METRICS_PORT", "value": "8000" },
         { "name": "SERVICE_NAMESPACE", "value": "finguard" },
+        { "name": "ECS_CLUSTER_NAME", "value": "ecs-cluster" },
         { "name": "DEPLOY_ENV", "value": "prod" }
       ],
       "logConfiguration": {

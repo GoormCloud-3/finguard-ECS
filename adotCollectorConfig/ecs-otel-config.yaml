@@ -3,7 +3,7 @@ extensions:
   sigv4auth:
     region: ${AWS_REGION}
   ecs_observer:
-    CLUSTER_NAME: ${ECS_CLUSTER_NAME}
+    cluster_name: ${ECS_CLUSTER_NAME}
     result_file: /etc/ecs/ecs_sd_targets.yaml
     refresh_interval: 60s
 
@@ -55,7 +55,7 @@ exporters:
     region: ${AWS_REGION}
 
 service:
-  extensions: [health_check, sigv4auth]
+  extensions: [health_check, sigv4auth, ecs_observer]
   pipelines:
     traces:
       receivers: [otlp]
