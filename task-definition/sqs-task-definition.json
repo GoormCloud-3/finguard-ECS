@@ -13,7 +13,7 @@
     {
       "name": "adot-collector",
       "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest",
-      "command": ["--config=/etc/otel/ecs-otel-config.yaml"],
+      "command": ["--config=/etc/ecs/otel-config.yaml"],
       "environment": [
         { "name": "AWS_REGION", "value": "${AWS_REGION}" },
         { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" },
