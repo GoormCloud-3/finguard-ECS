@@ -19,7 +19,14 @@
         { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" },
         { "name": "METRICS_PORT", "value": "8000" },
         { "name": "SERVICE_NAMESPACE", "value": "finguard" },
-        { "name": "DEPLOY_ENV", "value": "prod" }
+        { "name": "DEPLOY_ENV", "value": "prod" },
+        { "name": "FIREBASE_SA_PARAM", "value": "/prod/firebase-service-account-json" }
+      ],
+      "secrets": [
+        {
+          "name": "FIREBASE_SA_JSON",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/prod/firebase-service-account-json"
+        }
       ],
       "healthCheck": {
         "command": ["CMD-SHELL","curl -sf http://localhost:13133/ || exit 1"],
