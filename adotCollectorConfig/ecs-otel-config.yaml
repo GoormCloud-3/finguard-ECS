@@ -14,14 +14,14 @@ receivers:
         - job_name: app
           scrape_interval: 15s
           static_configs:
-            - targets: ["127.0.0.1:8000"]  # 예: 8000
+            - targets: ["0.0.0.0:8000"]  # 예: 8000
           metrics_path: /metrics
   awsecscontainermetrics: {}
 
 processors:
   batch:
   resourcedetection:
-    detectors: [env, ecs, ec2]
+    detectors: [env, ecs]
   resource:
     attributes:
       - key: service.namespace
@@ -32,7 +32,8 @@ processors:
         value: ${DEPLOY_ENV}
 
 exporters:
-  awsxray: {}                # 트레이스 → X-Ray
+  awsxray: 
+    region: ${AWS_REGION}                # 트레이스 → X-Ray
   prometheusremotewrite:     # 메트릭 → AMP
     endpoint: https://aps-workspaces.${AWS_REGION}.amazonaws.com/workspaces/${AMP_WORKSPACE_ID}/api/v1/remote_write
     auth:
@@ -50,10 +51,10 @@ service:
       processors: [resourcedetection, resource, batch]
       exporters: [awsxray]
     metrics:
-      receivers: [otlp, prometheus]
+      receivers: [otlp, prometheus, awsecscontainermetrics]
       processors: [resourcedetection, resource, batch]
       exporters: [prometheusremotewrite]
     logs:
       receivers: [otlp]
-      processors: [resource, batch]
+      processors: [resourcedetection, resource, batch]
       exporters: [awscloudwatchlogs]
