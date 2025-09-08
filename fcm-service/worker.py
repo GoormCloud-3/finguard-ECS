@@ -63,7 +63,7 @@ signal.signal(signal.SIGINT, _handle_sigterm)
 
 # ---------- AWS clients ----------
 REGION = os.getenv("AWS_REGION", "ap-northeast-2")
-DEFAULT_QUEUE_URL = "https://sqs.ap-northeast-2.amazonaws.com/381492026475/fcm-push-trade-queue"
+DEFAULT_QUEUE_URL = "https://sqs.ap-northeast-2.amazonaws.com/381492026475/finguard-dev-fcm-push-trade-queue"
 QUEUE_URL = os.getenv("QUEUE_URL", DEFAULT_QUEUE_URL)
 
 _boto_cfg = Config(
