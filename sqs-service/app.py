@@ -1,4 +1,5 @@
 # app.py
+import os
 import json
 import logging
 import time
@@ -17,8 +18,12 @@ from opentelemetry.trace import Status, StatusCode
 from opentelemetry.propagate import extract
 from opentelemetry.propagators.textmap import Getter
 
+# Prometheus
+from prometheus_client import Counter, Histogram
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+
 # ───────────────────────── 기본 설정 ─────────────────────────
-region = "ap-northeast-2"
+region = os.getenv("AWS_REGION", "ap-northeast-2")
 
 # 네트워크 안정화: 재시도/타임아웃
 _boto_cfg = Config(
@@ -44,7 +49,15 @@ s3_bucket         = None
 s3_key            = None
 initialized       = False
 
-# 종료 신호
+# ───────────────────────── Prometheus Metrics ─────────────────────────
+SQS_POLL_SIZE         = Histogram("sqs_poll_batch_size", "Messages received per poll", buckets=(0, 1, 2, 5, 10))
+SQS_ERRORS_TOTAL      = Counter("sqs_errors_total", "Unhandled errors")
+MSG_PROCESSED_TOTAL   = Counter("sqs_messages_processed_total", "Messages processed", ["result"])  # success|skipped|error
+SM_INVOKE_SECONDS     = Histogram("sagemaker_invoke_seconds", "SageMaker invoke latency (s)")
+S3_APPEND_SECONDS     = Histogram("s3_append_seconds", "S3 append latency (s)")
+SNS_PUBLISH_TOTAL     = Counter("sns_publish_total", "SNS publishes (alerts)")
+
+# ───────────────────────── 종료 신호 ─────────────────────────
 RUNNING = True
 def _handle_sigterm(signum, frame):
     global RUNNING
@@ -57,25 +70,32 @@ signal.signal(signal.SIGINT,  _handle_sigterm)
 # OpenTelemetry Tracer
 tracer = trace.get_tracer("sqs-service")
 
-# ─────────────────────── 헬스 서버 (ECS healthcheck 용) ───────────────────────
+# ─────────────────────── 헬스/메트릭 서버 ───────────────────────
+HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8000"))
+
 class _Health(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+        elif self.path == "/metrics":
+            output = generate_latest()
+            self.send_response(200)
+            self.send_header("Content-Type", CONTENT_TYPE_LATEST)
+            self.send_header("Content-Length", str(len(output)))
+            self.end_headers()
+            self.wfile.write(output)
         else:
             self.send_response(404); self.end_headers()
 
 def _start_health_server():
-    srv = HTTPServer(("0.0.0.0", 9400), _Health)
+    srv = HTTPServer(("0.0.0.0", HEALTH_PORT), _Health)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 # ─────────────────────── 컨텍스트 추출 Getter ───────────────────────
 class _AttrGetter(Getter):
     def get(self, carrier, key):
-        # 대소문자 혼용 방지
         if not carrier or not key:
             return []
-        # 일반화된 조회
         for k in (key, key.lower(), key.upper(), key.title()):
             if k in carrier:
                 v = carrier[k]
@@ -100,7 +120,7 @@ def _extract_ctx_from_sqs(msg: dict):
         if isinstance(v, dict) and "StringValue" in v:
             carrier[k] = v["StringValue"]
 
-    # 2) SNS envelope 내부 MessageAttributes: { Name : {Type: "String", Value: "..."} }
+    # 2) SNS envelope 내부 MessageAttributes
     try:
         body = json.loads(msg.get("Body") or "{}")
         if isinstance(body, dict):
@@ -112,18 +132,18 @@ def _extract_ctx_from_sqs(msg: dict):
                     elif "StringValue" in v:
                         carrier.setdefault(k, v["StringValue"])
     except Exception:
-        # Body가 JSON이 아닐 수도 있음
         pass
 
-    # 흘러온 키들 중 표준 키 우선 확보
+    # 표준 키 우선
     norm = {}
     for k, v in carrier.items():
         lk = k.lower()
         if lk in ("x-amzn-trace-id", "traceparent", "baggage"):
             norm[k] = v
     if not norm and carrier:
-        norm = carrier  # 혹시 표준 키 없이 들어온 경우도 최후 시도
+        norm = carrier
 
+    # extract(carrier, getter=...)
     return extract(norm, getter=_AttrGetter())
 
 # ─────────────────────── 헬퍼 ───────────────────────
@@ -175,7 +195,7 @@ def get_fcm_tokens(user_sub: str):
         return tokens
 
 def invoke_sagemaker(endpoint: str, features):
-    with tracer.start_as_current_span("sagemaker.invoke_endpoint") as span:
+    with tracer.start_as_current_span("sagemaker.invoke_endpoint") as span, SM_INVOKE_SECONDS.time():
         span.set_attribute("sm.endpoint", endpoint)
         response = sagemaker_client.invoke_endpoint(
             EndpointName=endpoint,
@@ -191,7 +211,7 @@ def invoke_sagemaker(endpoint: str, features):
             raise
 
     # S3에 features 저장(누적 CSV)
-    with tracer.start_as_current_span("s3.append_features") as span:
+    with tracer.start_as_current_span("s3.append_features") as span, S3_APPEND_SECONDS.time():
         span.set_attribute("s3.bucket", s3_bucket or "")
         span.set_attribute("s3.key", s3_key or "")
         try:
@@ -218,11 +238,11 @@ def publish_sns(fcm_tokens):
         span.set_attribute("sns.topic", topicArn or "")
         if not fcm_tokens:
             return
-        # botocore 계측이 켜져 있으면 traceparent/X-Ray 헤더 자동 주입
         sns_client.publish(
             TopicArn=topicArn,
             Message=json.dumps({"fcmTokens": fcm_tokens}),
         )
+        SNS_PUBLISH_TOTAL.inc()
 
 def receive_messages():
     with tracer.start_as_current_span("sqs.receive_messages") as span:
@@ -237,6 +257,7 @@ def receive_messages():
             VisibilityTimeout=60,
         )
         msgs = response.get("Messages", [])
+        SQS_POLL_SIZE.observe(len(msgs))
         span.set_attribute("sqs.messages", len(msgs))
         return msgs
 
@@ -254,25 +275,28 @@ def process_message(record: dict):
             body = json.loads(record["Body"]) if isinstance(record.get("Body"), str) else record["Body"]
         except Exception as e:
             logging.exception("❌ Invalid SQS message body")
+            MSG_PROCESSED_TOTAL.labels(result="error").inc()
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR, "invalid body"))
-            return
+            return False
 
         try:
             message = json.loads(body.get("Message", body)) if isinstance(body.get("Message", body), str) else body.get("Message", body)
         except Exception as e:
             logging.exception("❌ Invalid nested message (SNS-style)")
+            MSG_PROCESSED_TOTAL.labels(result="error").inc()
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR, "invalid nested"))
-            return
+            return False
 
         user_sub = (message or {}).get("userSub") or body.get("userSub")
         features = (message or {}).get("features") or body.get("features")
         span.set_attribute("user.sub", user_sub or "")
         if features is None:
             logging.warning("⚠️ Missing 'features' in message. Skipping.")
+            MSG_PROCESSED_TOTAL.labels(result="skipped").inc()
             span.set_status(Status(StatusCode.ERROR, "no features"))
-            return
+            return False
 
         try:
             result = invoke_sagemaker(sageMakerEndpoint, features)
@@ -280,10 +304,11 @@ def process_message(record: dict):
             if result.get("prediction") == 1:
                 tokens = get_fcm_tokens(user_sub) if user_sub else []
                 publish_sns(tokens)
-            return True
-            # else: 정상 거래
+            MSG_PROCESSED_TOTAL.labels(result="success").inc()
+            return True  # 정상 처리
         except Exception as e:
             logging.exception("❌ Error during message processing")
+            MSG_PROCESSED_TOTAL.labels(result="error").inc()
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR, str(e)))
             return False
@@ -306,8 +331,11 @@ def main():
     # --- 초기화 재시도 루프 ---
     global initialized
     while not initialized and RUNNING:
-        with tracer.start_as_current_span("bootstrap.init"):
-            init()
+        try:
+            with tracer.start_as_current_span("bootstrap.init"):
+                init()
+        except Exception:
+            SQS_ERRORS_TOTAL.inc()
         if not initialized:
             time.sleep(5)
 
@@ -328,14 +356,13 @@ def main():
                 # 2) 복원 컨텍스트로 "메시지 단위" 루트 스팬 시작
                 with tracer.start_as_current_span("sqs.process_message", context=ctx) as span:
                     span.set_attribute("sqs.message_id", msg.get("MessageId", ""))
-                    check = process_message(msg)
-                    if check:
+                    ok = process_message(msg)
+                    if ok:
                         delete_message(msg.get("ReceiptHandle", ""))
-                    else:
-                        pass
 
         except Exception:
             logging.exception("Error receiving messages")
+            SQS_ERRORS_TOTAL.inc()
             time.sleep(5)
 
     logging.info("👋 Exiting main loop.")

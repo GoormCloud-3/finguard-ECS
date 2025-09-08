@@ -4,22 +4,38 @@ import json
 import logging
 import signal
 import time
+import base64
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import boto3
 from botocore.config import Config
 from firebase_admin import credentials, initialize_app, messaging
 
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+# ---------- Prometheus Client ----------
+from prometheus_client import Counter, Histogram
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+
+# Prometheus metrics (전역)
+FCM_PROCESSED = Counter("fcm_processed_total", "FCM messages processed", ["mode"])  # mode: single|topic|condition
+FCM_ERRORS    = Counter("fcm_errors_total",    "Errors while processing")
+SQS_POLL_SIZE = Histogram("sqs_poll_batch_size", "Messages received per poll", buckets=(0, 1, 2, 5, 10))
+FCM_SEND_SEC  = Histogram("fcm_send_seconds",  "Firebase send latency (s)")
 
 # ---------- Health ----------
-
 HEALTH_PORT = int(os.getenv("HEALTH_PORT", "9400"))
 
 class _Health(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+        elif self.path == "/metrics":
+            output = generate_latest()
+            self.send_response(200)
+            self.send_header("Content-Type", CONTENT_TYPE_LATEST)
+            self.send_header("Content-Length", str(len(output)))
+            self.end_headers()
+            self.wfile.write(output)
         else:
             self.send_response(404); self.end_headers()
 
@@ -85,12 +101,6 @@ class _SQSAttrGetter(Getter):
 _SQS_GETTER = _SQSAttrGetter()
 
 # ---------- Firebase credentials ----------
-# 위쪽 import에 추가
-import base64
-import boto3
-
-REGION = os.getenv("AWS_REGION", "ap-northeast-2")
-
 def _init_firebase_admin():
     """
     우선순위:
@@ -98,13 +108,12 @@ def _init_firebase_admin():
     2) FIREBASE_SA_PARAM (SSM 파라미터 이름)  ← 백업 경로
     3) FIREBASE_CRED_FILE (기본: service-account-key.json)
     """
-    sa_env = os.getenv("FIREBASE_SA_JSON")
+    sa_env   = os.getenv("FIREBASE_SA_JSON")
     sa_param = os.getenv("FIREBASE_SA_PARAM")  # ex) /prod/firebase-service-account-json
     file_path = os.getenv("FIREBASE_CRED_FILE", "service-account-key.json")
 
     try:
         if sa_env:
-            # 존재 여부만 로깅(내용 노출 금지)
             logger.info("🔐 FIREBASE_SA_JSON detected (len=%d)", len(sa_env))
             try:
                 cred_dict = json.loads(sa_env)
@@ -117,7 +126,7 @@ def _init_firebase_admin():
 
         if sa_param:
             logger.info("🔐 Fetching Firebase SA from SSM parameter: %s", sa_param)
-            ssm = boto3.client("ssm", region_name=REGION)
+            ssm = boto3.client("ssm", region_name=REGION, config=_boto_cfg)
             res = ssm.get_parameter(Name=sa_param, WithDecryption=True)
             val = res["Parameter"]["Value"]
             try:
@@ -138,7 +147,6 @@ def _init_firebase_admin():
         logger.error("Firebase 초기화 실패: %s", e)
         raise
 
-
 # ---------- helpers ----------
 def mask_token(token: str | None) -> str | None:
     if not token:
@@ -156,6 +164,7 @@ def parse_payload(body_str: str) -> dict:
         return outer or {}
     except Exception as e:
         logger.error(f"Payload 파싱 실패: {e}")
+        FCM_ERRORS.inc()
         return {}
 
 def build_fcm_parts(payload: dict) -> dict:
@@ -186,14 +195,18 @@ def poll_sqs_once() -> int:
                 span.set_attribute("sqs.queue", QUEUE_URL.split("/")[-1])
         except Exception as e:
             logger.error(f"SQS 수신 오류: {e}")
+            FCM_ERRORS.inc()
             return processed
 
-        if "Messages" not in res:
+        msgs = res.get("Messages", [])
+        SQS_POLL_SIZE.observe(len(msgs))
+
+        if not msgs:
             logger.info("📭 대기열에 메시지가 없습니다.")
             return processed
 
-        for msg in res["Messages"]:
-            token_ctx = attach(extract(msg, getter=_SQS_GETTER))  # ★ 부모 트레이스 연결
+        for msg in msgs:
+            token_ctx = attach(extract(msg, getter=_SQS_GETTER))  # 부모 트레이스 연결
             try:
                 with tracer.start_as_current_span("msg.handle") as span:
                     try:
@@ -211,22 +224,25 @@ def poll_sqs_once() -> int:
                         msg_kwargs = build_fcm_parts(payload)
 
                         if single_token:
-                            with tracer.start_as_current_span("fcm.send_single") as sspan:
+                            with tracer.start_as_current_span("fcm.send_single") as sspan, FCM_SEND_SEC.time():
                                 sspan.set_attribute("fcm.mode", "single")
                                 sspan.set_attribute("fcm.token_masked", masked_single or "")
                                 messaging.send(messaging.Message(**msg_kwargs, token=single_token))
+                            FCM_PROCESSED.labels(mode="single").inc()
 
                         elif topic:
-                            with tracer.start_as_current_span("fcm.send_topic") as sspan:
+                            with tracer.start_as_current_span("fcm.send_topic") as sspan, FCM_SEND_SEC.time():
                                 sspan.set_attribute("fcm.mode", "topic")
                                 sspan.set_attribute("fcm.topic", topic)
                                 messaging.send(messaging.Message(**msg_kwargs, topic=topic))
+                            FCM_PROCESSED.labels(mode="topic").inc()
 
                         elif condition:
-                            with tracer.start_as_current_span("fcm.send_condition") as sspan:
+                            with tracer.start_as_current_span("fcm.send_condition") as sspan, FCM_SEND_SEC.time():
                                 sspan.set_attribute("fcm.mode", "condition")
                                 sspan.set_attribute("fcm.condition", condition)
                                 messaging.send(messaging.Message(**msg_kwargs, condition=condition))
+                            FCM_PROCESSED.labels(mode="condition").inc()
 
                         else:
                             raise ValueError("Invalid payload: token | topic | condition 중 하나는 필요")
@@ -239,6 +255,7 @@ def poll_sqs_once() -> int:
 
                     except Exception as e:
                         logger.error(f"❌ 메시지 처리 오류 (msgId={msg.get('MessageId')}): {e}")
+                        FCM_ERRORS.inc()
                         span.record_exception(e)
                         span.set_status(Status(StatusCode.ERROR, str(e)))
                         # 삭제하지 않음 → 재시도 가능

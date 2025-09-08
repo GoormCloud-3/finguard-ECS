@@ -17,16 +17,12 @@
       "environment": [
         { "name": "AWS_REGION", "value": "${AWS_REGION}" },
         { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" },
-        { "name": "METRICS_PORT", "value": "8000" },
         { "name": "SERVICE_NAMESPACE", "value": "finguard" },
         { "name": "DEPLOY_ENV", "value": "prod" },
-        { "name": "FIREBASE_SA_PARAM", "value": "/prod/firebase-service-account-json" }
+        { "name": "ECS_CLUSTER_NAME", "value": "ecs-cluster" }              
       ],
-      "secrets": [
-        {
-          "name": "FIREBASE_SA_JSON",
-          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/prod/firebase-service-account-json"
-        }
+       "mountPoints": [
+        { "sourceVolume": "ecs-sd-vol", "containerPath": "/etc/ecs", "readOnly": false }  
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
@@ -49,7 +45,14 @@
         { "name": "OTEL_EXPORTER_OTLP_PROTOCOL", "value": "grpc" },
         { "name": "OTEL_PROPAGATORS", "value": "xray" },
         { "name": "OTEL_TRACES_SAMPLER", "value": "parentbased_always_on" },
-        { "name": "OTEL_RESOURCE_ATTRIBUTES", "value": "service.name=fcm-service,service.namespace=finguard" }
+        { "name": "OTEL_RESOURCE_ATTRIBUTES", "value": "service.name=fcm-service,service.namespace=finguard" },
+        { "name": "HEALTH_PORT", "value": "8000" } 
+      ],
+      "secrets": [
+        {
+          "name": "FIREBASE_SA_JSON",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/prod/firebase-service-account-json"
+        }
       ],
       "portMappings": [{ "containerPort": 8000, "protocol": "tcp" }],
       "logConfiguration": {

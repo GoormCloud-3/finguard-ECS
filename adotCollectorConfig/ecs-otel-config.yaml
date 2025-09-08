@@ -2,6 +2,10 @@ extensions:
   health_check:
   sigv4auth:
     region: ${AWS_REGION}
+  ecs_observer:
+    CLUSTER_NAME: ${ECS_CLUSTER_NAME}
+    result_file: /etc/ecs/ecs_sd_targets.yaml
+    refresh_interval: 60s
 
 receivers:
   otlp:
@@ -12,9 +16,16 @@ receivers:
     config:
       scrape_configs:
         - job_name: app
+          file_sd_configs:
+            - files: ["/etc/ecs/ecs_sd_targets.yaml"]
+          relabel_configs:
+            - source_labels: [__meta_ecs_container_name]
+              regex: account-service|user-service|transaction-service|fcm-service|sqs-service
+              action: keep
+            - source_labels: [__meta_ecs_task_id]
+              target_label: instance
+              action: replace
           scrape_interval: 15s
-          static_configs:
-            - targets: ["127.0.0.1:8000"]  # 예: 8000
           metrics_path: /metrics
   awsecscontainermetrics: {}
 
