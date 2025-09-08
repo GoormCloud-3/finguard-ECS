@@ -21,10 +21,6 @@
         { "name": "SERVICE_NAMESPACE", "value": "finguard" },
         { "name": "DEPLOY_ENV", "value": "prod" }
       ],
-      "healthCheck": {
-        "command": ["CMD-SHELL","curl -sf http://localhost:13133/ || exit 1"],
-        "interval": 10, "timeout": 5, "retries": 3, "startPeriod": 10
-      },
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {

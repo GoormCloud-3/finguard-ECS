@@ -28,10 +28,6 @@
           "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/prod/firebase-service-account-json"
         }
       ],
-      "healthCheck": {
-        "command": ["CMD-SHELL","curl -sf http://localhost:13133/ || exit 1"],
-        "interval": 10, "timeout": 5, "retries": 3, "startPeriod": 10
-      },
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
