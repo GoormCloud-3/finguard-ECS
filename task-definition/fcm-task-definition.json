@@ -42,7 +42,7 @@
     {
       "name": "fcm-service",
       "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/fcm-service:${IMAGE_TAG}",
-      "dependsOn": [{ "containerName": "adot-collector", "condition": "HEALTHY" }],
+      "dependsOn": [{ "containerName": "adot-collector", "condition": "START" }],
       "environment": [
         { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
         { "name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "http://127.0.0.1:4317" },
