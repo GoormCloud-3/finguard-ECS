@@ -39,6 +39,7 @@ exporters:
       authenticator: sigv4auth
   awscloudwatchlogs:         # (선택) 로그 → CloudWatch Logs
     log_group_name: /ecs/app-otlp-logs
+    log_stream_name: adot-collector
     region: ${AWS_REGION}
 
 service:
