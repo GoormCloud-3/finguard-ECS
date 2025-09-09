@@ -4,7 +4,7 @@ extensions:
     region: ${AWS_REGION}
   ecs_observer:
     cluster_name: ${ECS_CLUSTER_NAME}
-    result_file: /tmp/ecs_sd_targets.yaml
+    result_file: /sd/ecs_sd_targets.yaml
     refresh_interval: 60s
 
 receivers:
@@ -17,7 +17,7 @@ receivers:
       scrape_configs:
         - job_name: app
           file_sd_configs:
-            - files: ["/tmp/ecs_sd_targets.yaml"]
+            - files: ["/sd/ecs_sd_targets.yaml"]
               refresh_interval: 30s
           relabel_configs:
             - source_labels: [__meta_ecs_container_name]

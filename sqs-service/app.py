@@ -39,7 +39,6 @@ sagemaker_client  = boto3.client("sagemaker-runtime", region_name=region, config
 sns_client        = boto3.client("sns",               region_name=region, config=_boto_cfg)
 sqs_client        = boto3.client("sqs",               region_name=region, config=_boto_cfg)
 s3_client         = boto3.client("s3",                region_name=region, config=_boto_cfg)
-sts_client        = boto3.client("sts",               region_name=region, config=_boto_cfg)
 
 sageMakerEndpoint = None
 topicArn          = None
@@ -319,15 +318,8 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
     _start_health_server()
 
-    # 누가 실행 중인지(역할 확인)
-    try:
-        arn = sts_client.get_caller_identity()["Arn"]
-        logging.info(f"👤 STS caller identity: {arn}")
-    except Exception as e:
-        logging.warning(f"STS whoami failed: {e}")
 
     logging.info("🚀 SQS receive Worker started")
-
     # --- 초기화 재시도 루프 ---
     global initialized
     while not initialized and RUNNING:
