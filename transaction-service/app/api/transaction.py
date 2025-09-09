@@ -185,7 +185,7 @@ def _save_median_heaps(conn, account_number: str, min_heap: MinHeap, max_heap: M
 
 @router.post("/transaction", response_model=TransactionSuccessResponse, status_code=201)
 async def create_transaction(payload: TransactionRequest, request: Request):
-    logging.info("Starting create transaction")
+    logging.info("⚙️Starting create transaction")
     logging.info(
         "create Transaction called : %s, %s, %s, %s, %s",
         payload.userSub, payload.my_account, payload.counter_account, payload.money, payload.location
@@ -200,43 +200,60 @@ async def create_transaction(payload: TransactionRequest, request: Request):
 
             # 0) 큐 URL (SSM)
             with tracer.start_as_current_span("ssm.get_queue_url"):
+                logging.info("Fetching SQS queue URL from SSM ...")
                 queue_url = get_queue_url_sync()
-
+            
+            
             with conn.cursor() as cur:  # 커서는 스레드만 접근
                 # 1) 사기 계좌 체크
                 with tracer.start_as_current_span("sql.check_fraud") as span:
+                    logging.info("Checking for fraudulent counter account ...")
                     is_fraud = await anyio.to_thread.run_sync(_check_fraud, conn, payload.counter_account)
                     span.set_attribute("account.counter", payload.counter_account)
                     if is_fraud:
+                        logging.warning("🚨Fraudulent account detected")
                         raise HTTPException(status_code=403, detail={"error": "FraudulentAccount", "message": "사기 계좌로 송금할 수 없습니다."})
+                    logging.info("No fraud detected for counter account.")
 
                 # 2) 내 계좌
                 with tracer.start_as_current_span("sql.select_my_account") as span:
+                    logging.info("Fetching my account information ...")
                     my_account = await anyio.to_thread.run_sync(_select_my_account, conn, payload.my_account)
                     span.set_attribute("account.my", payload.my_account)
                     if not my_account:
+                        logging.warning("🚨My account not found")
                         raise HTTPException(status_code=404, detail={"error":"MyAccountNotFound","message":"내 계좌를 찾을 수 없습니다."})
                     if my_account["balance"] < float(payload.money):
+                        logging.warning("🚨Insufficient balance for the transaction")
                         raise HTTPException(status_code=400, detail={"error": "InsufficientBalance", "message": "잔고가 부족합니다."})
-
+                    logging.info(f"My account {payload.my_account} has sufficient balance: {my_account['balance']}")
+                
                 # 3) 상대 계좌
                 with tracer.start_as_current_span("sql.select_counter_account") as span:
+                    logging.info("Fetching counter account information ...")
                     counter_account = await anyio.to_thread.run_sync(_select_counter_account, conn, payload.counter_account)
                     if not counter_account:
+                        logging.warning("🚨Counter account not found")
                         raise HTTPException(status_code=404, detail={"error": "CounterAccountNotFound", "message": "해당 계좌를 찾을 수 없습니다."})
+                    logging.info(f"Counter account {payload.counter_account} found with ID {counter_account['account_id']}")
 
                 # 4) 마지막 거래 위치
                 with tracer.start_as_current_span("sql.last_tx_location"):
+                    logging.info("Fetching last transaction location ...")
                     gps_last = await anyio.to_thread.run_sync(_get_last_tx_location, conn, my_account["account_id"])
 
                 # 5) 홈 좌표
                 with tracer.start_as_current_span("sql.get_home_location"):
+                    logging.info("Fetching user's home location ...")
                     gps_home = await anyio.to_thread.run_sync(_get_home_location, conn, payload.userSub)
                     if not gps_home:
+                        logging.warning("🚨User home location not found")
                         raise HTTPException(status_code=404, detail={"error":"UserNotFound","message":"유저 정보를 찾을 수 없습니다."})
+                    logging.info(f"User's home location: {gps_home}")
 
                 # 6) 특징 계산 (비-DB)
                 with tracer.start_as_current_span("biz.compute_features") as span:
+                    logging.info("Computing transaction features ...")
                     distance_from_home = haversine_distance(gps_home, payload.location)
                     distance_from_last = haversine_distance(gps_last, payload.location) if gps_last else 0.0
                     repeat_retailer = await anyio.to_thread.run_sync(
@@ -249,9 +266,14 @@ async def create_transaction(payload: TransactionRequest, request: Request):
                     span.set_attribute("feature.distance_from_last", distance_from_last)
                     span.set_attribute("feature.repeat_retailer", repeat_retailer)
                     span.set_attribute("feature.used_chip", used_chip)
+                    logging.info(
+                        f"Features computed: distance_from_home={distance_from_home}, "
+                        f"distance_from_last={distance_from_last}, repeat_retailer={repeat_retailer}, used_chip={used_chip}"
+                    )
 
                 # 7) 송금 적용 (원자성)
                 with tracer.start_as_current_span("sql.apply_transfer"):
+                    logging.info("Applying transfer between accounts ...")
                     try:
                         debit_id, credit_id = await anyio.to_thread.run_sync(
                             _apply_transfer,
@@ -264,11 +286,15 @@ async def create_transaction(payload: TransactionRequest, request: Request):
                         )
                     except ValueError as ve:
                         if str(ve) == "INSUFFICIENT_BALANCE":
+                            logging.warning("🚨Insufficient balance detected during transfer application")
                             raise HTTPException(status_code=400, detail={"error":"InsufficientBalance","message":"잔고가 부족합니다."})
+                        logging.exception("🚨Error applying transfer")
                         raise
+                    logging.info(f"Transfer applied successfully: debit_id={debit_id}, credit_id={credit_id}")
 
                 # 8) 중앙값 갱신
                 with tracer.start_as_current_span("sql.update_median"):
+                    logging.info("Updating median heaps for transaction amounts ...")
                     min_heap, max_heap = await anyio.to_thread.run_sync(_load_median_heaps, conn, payload.my_account)
 
                     if max_heap.size() and min_heap.size() and max_heap.size() == min_heap.size():
@@ -290,9 +316,11 @@ async def create_transaction(payload: TransactionRequest, request: Request):
                         max_heap.push(min_heap.pop())
 
                     await anyio.to_thread.run_sync(_save_median_heaps, conn, payload.my_account, min_heap, max_heap)
+                    logging.info(f"Median heaps updated. New median: { (max_heap.peek() if max_heap.size() > min_heap.size() else (max_heap.peek() + min_heap.peek()) / 2) }")
 
                 # 9) SQS 전송
                 with tracer.start_as_current_span("sqs.send_message") as span:
+                    logging.info("💬Sending transaction data to SQS ...")
                     message = {
                         "userSub": payload.userSub,
                         "features": [distance_from_home, distance_from_last, ratio_to_median, repeat_retailer, used_chip],
@@ -307,6 +335,7 @@ async def create_transaction(payload: TransactionRequest, request: Request):
                         MessageDeduplicationId=dedup_id,          # FIFO인 경우
                         # MessageAttributes는 수동 주입하지 않음(자동 주입)
                     )
+                    logging.info("Message sent to SQS successfully.")
 
         # 응답
         return TransactionSuccessResponse(
@@ -326,15 +355,15 @@ async def create_transaction(payload: TransactionRequest, request: Request):
         )
 
     except HTTPException:
-        logging.exception("create_transaction failed with HTTPException")
+        logging.exception("🚨create_transaction failed with HTTPException")
         raise
     except Exception:
-        logging.exception("create_transaction failed")
+        logging.exception("🚨create_transaction failed")
         try:
             conn.rollback()
         except Exception:
             pass
-        raise HTTPException(status_code=500, detail={"error": "InternalError", "message": "송금 처리 중 에러 발생"})
+        raise HTTPException(status_code=500, detail={"error": "InternalError", "message": "🚨송금 처리 중 에러 발생"})
     finally:
         try:
             if conn:

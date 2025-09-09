@@ -271,19 +271,26 @@ IDLE_RESET   = int(os.getenv("IDLE_RESET", "5"))
 
 def run_forever():
     logger.info("🚀 FCM 워커 시작 (상시 폴링 모드)")
+    
+    logging.info("🔐 Firebase Admin SDK 초기화 시도 ...")
     _init_firebase_admin()
+    logging.info("✅ Firebase Admin SDK 초기화 완료")
 
     empty = 0
     while not _SHOULD_STOP:
+        logging.info("🔄 SQS 폴링 중...")
         n = poll_sqs_once()
+        logging.info(f"📬 이번 폴링에서 {n}개 메시지 처리 완료")
         if n == 0:
+            logging.info("⏳ No messages, polling again ...")
             empty = min(empty + 1, IDLE_RESET)
             sleep_s = min(BACKOFF_BASE ** empty, BACKOFF_MAX)
             logger.debug(f"😴 빈 폴링: {empty}회, {sleep_s}s 대기")
             time.sleep(sleep_s)
         else:
+            logging.info("✅ 메시지 처리 완료, 즉시 다음 폴링 ...")
             empty = 0
-    logger.info("👋 안전 종료 완료")
+    logger.info("🔚 안전 종료 완료")
 
 if __name__ == "__main__":
     _start_health_server()

@@ -344,12 +344,15 @@ def main():
         try:
             with tracer.start_as_current_span("sqs.poll"):
                 messages = receive_messages()
+                logging.info(f"📥 Received {len(messages)} messages from SQS")
 
             if not messages:
+                logging.info("⏳ No messages, polling again ...")
                 time.sleep(1)
                 continue
 
             for msg in messages:
+                logging.info(f"➡️ Processing message ID: {msg.get('MessageId','')}")
                 # 1) 메시지에서 컨텍스트 복원
                 ctx = _extract_ctx_from_sqs(msg)
 
@@ -357,15 +360,18 @@ def main():
                 with tracer.start_as_current_span("sqs.process_message", context=ctx) as span:
                     span.set_attribute("sqs.message_id", msg.get("MessageId", ""))
                     ok = process_message(msg)
+                    logging.info(f"✅ Message processed, success={ok}")
                     if ok:
+                        logging.info("🗑 Deleting message from SQS ...")
                         delete_message(msg.get("ReceiptHandle", ""))
+                logging.info("✅ Completed processing message")
 
         except Exception:
-            logging.exception("Error receiving messages")
+            logging.exception("🚨Error receiving messages")
             SQS_ERRORS_TOTAL.inc()
             time.sleep(5)
 
-    logging.info("👋 Exiting main loop.")
+    logging.info("🔚 Exiting main loop.")
 
 if __name__ == "__main__":
     main()

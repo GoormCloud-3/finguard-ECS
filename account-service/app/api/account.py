@@ -80,21 +80,27 @@ def _select_accounts_by_user(conn, user_sub: str):
 
 @router.post("/accounts/create", response_model=AccountCreateResult)
 async def create_account(payload: CreateAccountRequest):
-    logging.info("Starting createAccount API")
+    logging.info("⚙️Starting createAccount API")
     conn = get_connection()
     try:
         # 비즈: 고유 계좌번호 생성
         with tracer.start_as_current_span("biz.generate_unique_number") as span:
             try:
+                logging.info("Generating unique account number ...")
                 account_number = await anyio.to_thread.run_sync(_generate_unique_account_number, conn)
                 span.set_attribute("app.account.number", account_number)
             except Exception as e:
+                logging.exception("🚨Error generating unique account number")
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
+        logging.info(f"Generated account number: {account_number}")
+        
+        
         # DB INSERT
         account_id = str(uuid4())
         with tracer.start_as_current_span("sql.insert_account") as span:
+            logging.info("Inserting new account into database ... ")
             span.set_attribute("db.system", "mysql")  # 사용 DB에 맞게
             span.set_attribute("db.statement", "INSERT INTO accounts(...) VALUES(...)")
             try:
@@ -127,31 +133,38 @@ async def create_account(payload: CreateAccountRequest):
 
 @router.get("/accounts/{account_id}", response_model=AccountDetailResponse)
 async def get_account(account_id: str):
-    logging.info("Starting getAccount API")
+    logging.info("⚙️Starting getAccount API")
     conn = get_connection()
     try:
         # 계좌 상세
         with tracer.start_as_current_span("sql.select_account") as span:
+            logging.info("Fetching account details from database ...")
             span.set_attribute("db.system", "mysql")
             span.set_attribute("db.statement", "SELECT ... FROM accounts WHERE account_id = ?")
             span.set_attribute("db.param.account_id", account_id)
             try:
+                logging.info(f"Fetching account details for account_id: {account_id}")
                 acc = await anyio.to_thread.run_sync(_select_account, conn, account_id)
                 if not acc:
+                    logging.warning(f"Account not found: {account_id}")
                     raise HTTPException(status_code=404, detail="Account not found")
             except Exception as e:
                 if not isinstance(e, HTTPException):
+                    logging.exception("🚨Error fetching account details")
                     span.record_exception(e)
                     span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
 
         # 거래 목록
         with tracer.start_as_current_span("sql.select_transactions") as span:
+            logging.info("Fetching transactions from database ...")
             span.set_attribute("db.system", "mysql")
             span.set_attribute("db.statement", "SELECT ... FROM transactions WHERE account_id = ?")
             try:
                 txs = await anyio.to_thread.run_sync(_select_transactions, conn, account_id)
+                logging.info(f"Fetched {len(txs)} transactions for account_id: {account_id}")
             except Exception as e:
+                logging.exception("🚨Error fetching transactions")
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
@@ -176,9 +189,10 @@ async def get_account(account_id: str):
             transactions=transactions
         )
     except HTTPException:
+        logging.warning(f"🚨HTTPException raised for account_id: {account_id}")
         raise
     except Exception as e:
-        logging.exception("getAccount failed")
+        logging.exception("🚨getAccount failed")
         raise HTTPException(status_code=400, detail="get_account ERROR : " + str(e))
     finally:
         if conn:
@@ -187,26 +201,31 @@ async def get_account(account_id: str):
 
 @router.post("/accounts/financial", response_model=GetAccountListResponse)
 async def get_account_list(payload: GetAccountListRequest):
-    logging.info("Starting getAccountList API")
+    logging.info("⚙️Starting getAccountList API")
     conn = get_connection()
     try:
-        # DynamoDB 호출 (boto3 자동계측 쓰면 span 자동 생성됨. 수동으로도 감싸두자.)
+        # DynamoDB 호출 (boto3 자동계측 쓰면 span 자동 생성됨. 수동으로도 감싸두자
         with tracer.start_as_current_span("ddb.store_fcm_token") as span:
             try:
+                logging.info("Storing FCM token in DynamoDB ...")
                 store_fcm_token(payload.sub, payload.fcmToken)
                 span.set_attribute("app.user.sub", payload.sub)
             except Exception as e:
+                logging.exception("🚨Error storing FCM token in DynamoDB")
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
 
         # 계좌 목록 조회
         with tracer.start_as_current_span("sql.select_accounts_by_userSub") as span:
+            logging.info("Fetching accounts from database ...")
             span.set_attribute("db.system", "mysql")
             span.set_attribute("db.statement", "SELECT ... FROM accounts WHERE userSub = ?")
             try:
+                logging.info(f"Fetching accounts for userSub: {payload.sub}")
                 accounts = await anyio.to_thread.run_sync(_select_accounts_by_user, conn, payload.sub)
             except Exception as e:
+                logging.exception("🚨Error fetching accounts")
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
@@ -224,7 +243,7 @@ async def get_account_list(payload: GetAccountListRequest):
             ]
         )
     except Exception as e:
-        logging.exception("getAccountList failed")
+        logging.exception("🚨getAccountList failed")
         raise HTTPException(status_code=400, detail="get_account_list ERROR : " + str(e))
     finally:
         if conn:
