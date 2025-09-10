@@ -15,6 +15,7 @@ logging.getLogger("uvicorn.access").handlers = logging.getLogger().handlers
 # ─────────────────────────────────────────────────────────
 app = FastAPI()
 
+
 # ─────────────────────────────────────────────────────────
 # 2) Health 체크
 # ─────────────────────────────────────────────────────────
@@ -22,14 +23,20 @@ app = FastAPI()
 def health():
     return {"status": "ok"}
 
+
 # ─────────────────────────────────────────────────────────
 # 3) Prometheus /metrics 노출 (ADOT가 긁어감)
 # ─────────────────────────────────────────────────────────
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 
-REQUEST_COUNT = Counter("http_requests_total", "Total HTTP requests", ["method", "path", "status"])
-REQUEST_LATENCY = Histogram("http_request_duration_seconds", "Request latency (seconds)", ["path"])
+REQUEST_COUNT = Counter(
+    "http_requests_total", "Total HTTP requests", ["method", "path", "status"]
+)
+REQUEST_LATENCY = Histogram(
+    "http_request_duration_seconds", "Request latency (seconds)", ["path"]
+)
+
 
 @app.middleware("http")
 async def prometheus_middleware(request: Request, call_next):
@@ -43,14 +50,17 @@ async def prometheus_middleware(request: Request, call_next):
     REQUEST_LATENCY.labels(path).observe(latency)
     return response
 
+
 @app.get("/metrics")
 def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 # ─────────────────────────────────────────────────────────
 # 4) 라우터(include_router)
 # ─────────────────────────────────────────────────────────
 from api.transaction import router as transaction_router
+
 app.include_router(transaction_router)
 
 # ─────────────────────────────────────────────────────────

@@ -10,9 +10,11 @@ _lock = threading.Lock()
 _initialized = False
 _config = {}
 
+
 def get_ssm_param(name: str, decrypt: bool = False) -> str:
     response = SSM.get_parameter(Name=name, WithDecryption=decrypt)
-    return response['Parameter']['Value']
+    return response["Parameter"]["Value"]
+
 
 def init_config():
     global _initialized, _config
@@ -32,6 +34,7 @@ def init_config():
         }
         _initialized = True
 
+
 def get_connection():
     init_config()
     host = _config["host"]
@@ -39,10 +42,7 @@ def get_connection():
     dbname = _config["db"]
 
     token = RDS.generate_db_auth_token(
-        DBHostname=host,
-        Port=3306,
-        DBUsername=user,
-        Region=REGION
+        DBHostname=host, Port=3306, DBUsername=user, Region=REGION
     )
 
     connection = pymysql.connect(

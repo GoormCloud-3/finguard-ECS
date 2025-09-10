@@ -1,24 +1,29 @@
-FROM python:3.13.1
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    AWS_REGION=ap-northeast-2 \
+    AWS_DEFAULT_REGION=ap-northeast-2 \
+    OTEL_TRACES_EXPORTER=otlp \
+    OTEL_METRICS_EXPORTER=none \
+    OTEL_PROPAGATORS=xray \
+    TZ=Asia/Seoul
 
 WORKDIR /app
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates tzdata && \
     rm -rf /var/lib/apt/lists/*
 
-
-
-ENV AWS_REGION=ap-northeast-2
-ENV AWS_DEFAULT_REGION=ap-northeast-2
-ENV XRAY_SERVICE_NAME=fcm-worker
-ENV PYTHONUNBUFFERED=1
-ENV SSM_PARAM_ARN=arn:aws:ssm:ap-northeast-2:381492026475:parameter/prod/firebase-service-account-json
-
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# secrets/SSM에서 FIREBASE_SA_JSON을 태스크 정의로 주입하고 있으니
+# 이미지에는 키 파일 넣지 말기(지금처럼 OK)
 
-CMD ["opentelemetry-instrument", "--traces_exporter", "otlp", "--metrics_exporter", "none", "--service_name", "fcm-service", "python", "worker.py"]
+CMD ["opentelemetry-instrument", \
+     "--service_name", "fcm-service", \
+     "python", "worker.py"]

@@ -14,6 +14,10 @@ receivers:
       http: { endpoint: 0.0.0.0:4318 }
   prometheus:
     config:
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+        honor_labels: true
       scrape_configs:
         - job_name: app
           file_sd_configs:
@@ -26,8 +30,9 @@ receivers:
             - source_labels: [__meta_ecs_task_id]
               target_label: instance
               action: replace
-          scrape_interval: 15s
           metrics_path: /metrics
+      resource_to_telemetry_conversion:
+        enabled: true
   awsecscontainermetrics: {}
 
 processors:
@@ -44,13 +49,13 @@ processors:
         value: ${DEPLOY_ENV}
 
 exporters:
-  awsxray: 
-    region: ${AWS_REGION}                # 트레이스 → X-Ray
-  prometheusremotewrite:     # 메트릭 → AMP
+  awsxray:
+    region: ${AWS_REGION} # 트레이스 → X-Ray
+  prometheusremotewrite: # 메트릭 → AMP
     endpoint: https://aps-workspaces.${AWS_REGION}.amazonaws.com/workspaces/${AMP_WORKSPACE_ID}/api/v1/remote_write
     auth:
       authenticator: sigv4auth
-  awscloudwatchlogs:         # (선택) 로그 → CloudWatch Logs
+  awscloudwatchlogs: # (선택) 로그 → CloudWatch Logs
     log_group_name: /ecs/app-otlp-logs
     log_stream_name: adot-collector
     region: ${AWS_REGION}

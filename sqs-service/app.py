@@ -12,49 +12,59 @@ import boto3
 import pandas as pd
 from botocore.config import Config
 
-# OpenTelemetry
+# ───────────────────────── OpenTelemetry: SDK + Exporter ─────────────────────────
 from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
-from opentelemetry.propagate import extract
+from opentelemetry.propagate import extract, set_global_textmap
 from opentelemetry.propagators.textmap import Getter
 
-# Prometheus
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+
+# (있으면 사용) AWS X-Ray 전용 ID/전파자
+try:
+    from opentelemetry.sdk.extension.aws.trace import AwsXRayIdGenerator  # type: ignore
+    from opentelemetry.propagators.aws import AwsXRayPropagator           # type: ignore
+    _HAS_XRAY_HELPERS = True
+except Exception:
+    _HAS_XRAY_HELPERS = False
+
+# ───────────────────────── Prometheus ─────────────────────────
 from prometheus_client import Counter, Histogram
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 # ───────────────────────── 기본 설정 ─────────────────────────
 region = os.getenv("AWS_REGION", "ap-northeast-2")
 
-# 네트워크 안정화: 재시도/타임아웃
 _boto_cfg = Config(
     retries={"max_attempts": 10, "mode": "standard"},
     connect_timeout=5,
-    read_timeout=65,  # SQS long polling 고려
+    read_timeout=65,
 )
 
-# 클라이언트
-ssm_client        = boto3.client("ssm",               region_name=region, config=_boto_cfg)
-ddb_client        = boto3.client("dynamodb",          region_name=region, config=_boto_cfg)
-sagemaker_client  = boto3.client("sagemaker-runtime", region_name=region, config=_boto_cfg)
-sns_client        = boto3.client("sns",               region_name=region, config=_boto_cfg)
-sqs_client        = boto3.client("sqs",               region_name=region, config=_boto_cfg)
-s3_client         = boto3.client("s3",                region_name=region, config=_boto_cfg)
+ssm_client = boto3.client("ssm",               region_name=region, config=_boto_cfg)
+ddb_client = boto3.client("dynamodb",          region_name=region, config=_boto_cfg)
+sagemaker_client = boto3.client("sagemaker-runtime", region_name=region, config=_boto_cfg)
+sns_client = boto3.client("sns",               region_name=region, config=_boto_cfg)
+sqs_client = boto3.client("sqs",               region_name=region, config=_boto_cfg)
+s3_client  = boto3.client("s3",                region_name=region, config=_boto_cfg)
 
 sageMakerEndpoint = None
-topicArn          = None
-tableName         = None
-queue_url         = None
-s3_bucket         = None
-s3_key            = None
-initialized       = False
+topicArn = None
+tableName = None
+queue_url = None
+s3_bucket = None
+s3_key = None
+initialized = False
 
 # ───────────────────────── Prometheus Metrics ─────────────────────────
-SQS_POLL_SIZE         = Histogram("sqs_poll_batch_size", "Messages received per poll", buckets=(0, 1, 2, 5, 10))
-SQS_ERRORS_TOTAL      = Counter("sqs_errors_total", "Unhandled errors")
-MSG_PROCESSED_TOTAL   = Counter("sqs_messages_processed_total", "Messages processed", ["result"])  # success|skipped|error
-SM_INVOKE_SECONDS     = Histogram("sagemaker_invoke_seconds", "SageMaker invoke latency (s)")
-S3_APPEND_SECONDS     = Histogram("s3_append_seconds", "S3 append latency (s)")
-SNS_PUBLISH_TOTAL     = Counter("sns_publish_total", "SNS publishes (alerts)")
+SQS_POLL_SIZE = Histogram("sqs_poll_batch_size", "Messages received per poll", buckets=(0, 1, 2, 5, 10))
+SQS_ERRORS_TOTAL = Counter("sqs_errors_total", "Unhandled errors")
+MSG_PROCESSED_TOTAL = Counter("sqs_messages_processed_total", "Messages processed", ["result"])  # success|skipped|error
+SM_INVOKE_SECONDS = Histogram("sagemaker_invoke_seconds", "SageMaker invoke latency (s)")
+S3_APPEND_SECONDS = Histogram("s3_append_seconds", "S3 append latency (s)")
+SNS_PUBLISH_TOTAL = Counter("sns_publish_total", "SNS publishes (alerts)")
 
 # ───────────────────────── 종료 신호 ─────────────────────────
 RUNNING = True
@@ -62,12 +72,47 @@ def _handle_sigterm(signum, frame):
     global RUNNING
     logging.info("🛑 SIGTERM received, shutting down gracefully...")
     RUNNING = False
-
 signal.signal(signal.SIGTERM, _handle_sigterm)
 signal.signal(signal.SIGINT,  _handle_sigterm)
 
-# OpenTelemetry Tracer
-tracer = trace.get_tracer("sqs-service")
+# ───────────────────────── OTel Tracer (init 전 임시) ─────────────────────────
+tracer = trace.get_tracer("bootstrap")
+
+def _init_tracing():
+    """
+    OTLP gRPC Exporter(Collector → X-Ray) 초기화.
+    - endpoint: OTEL_EXPORTER_OTLP_ENDPOINT (없으면 http://localhost:4317)
+    - X-Ray ID/Propagator 사용(설치돼 있으면)
+    - service.name / namespace 는 태스크 env(OTEL_RESOURCE_ATTRIBUTES)와 합쳐짐
+    """
+    global tracer
+
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+    svc_name = "sqs-service"
+    svc_ns   = os.getenv("SERVICE_NAMESPACE", "finguard")
+
+    # 리소스 구성 (env의 OTEL_RESOURCE_ATTRIBUTES와 merge됨)
+    resource = Resource.create({
+        "service.name": svc_name,
+        "service.namespace": svc_ns,
+    })
+
+    # X-Ray ID 생성기(가능하면) 사용
+    provider_kwargs = {"resource": resource}
+    if _HAS_XRAY_HELPERS:
+        provider_kwargs["id_generator"] = AwsXRayIdGenerator()
+
+    provider = TracerProvider(**provider_kwargs)
+    span_exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
+    provider.add_span_processor(BatchSpanProcessor(span_exporter))
+    trace.set_tracer_provider(provider)
+
+    # 전파자: 가능하면 X-Ray 사용 (없으면 기본값 사용)
+    if _HAS_XRAY_HELPERS:
+        set_global_textmap(AwsXRayPropagator())
+
+    tracer = trace.get_tracer(svc_name)
+    logging.info(f"✅ OTel tracing initialized (endpoint={endpoint}, xray_helpers={_HAS_XRAY_HELPERS})")
 
 # ─────────────────────── 헬스/메트릭 서버 ───────────────────────
 HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8000"))
@@ -106,20 +151,12 @@ class _AttrGetter(Getter):
         return list(carrier.keys()) if carrier else []
 
 def _extract_ctx_from_sqs(msg: dict):
-    """
-    SQS 메시지에서 OTel/X-Ray 컨텍스트 복원:
-    - SQS MessageAttributes (traceparent, baggage, X-Amzn-Trace-Id 등)
-    - SNS -> SQS 인 경우 Body(SNS envelope)의 MessageAttributes 도 검사
-    """
     carrier = {}
-
-    # 1) SQS MessageAttributes: { Name : {DataType:String, StringValue: "..."} }
-    attrs = (msg.get("MessageAttributes") or {})
+    attrs = msg.get("MessageAttributes") or {}
     for k, v in attrs.items():
         if isinstance(v, dict) and "StringValue" in v:
             carrier[k] = v["StringValue"]
 
-    # 2) SNS envelope 내부 MessageAttributes
     try:
         body = json.loads(msg.get("Body") or "{}")
         if isinstance(body, dict):
@@ -133,7 +170,6 @@ def _extract_ctx_from_sqs(msg: dict):
     except Exception:
         pass
 
-    # 표준 키 우선
     norm = {}
     for k, v in carrier.items():
         lk = k.lower()
@@ -142,7 +178,6 @@ def _extract_ctx_from_sqs(msg: dict):
     if not norm and carrier:
         norm = carrier
 
-    # extract(carrier, getter=...)
     return extract(norm, getter=_AttrGetter())
 
 # ─────────────────────── 헬퍼 ───────────────────────
@@ -154,7 +189,6 @@ def get_param(name, with_decryption=False):
         return resp["Parameter"]["Value"]
 
 def init():
-    """필수 파라미터 로딩"""
     logging.info("🔧 Initializing SQS worker...")
     global sageMakerEndpoint, topicArn, tableName, queue_url, s3_bucket, s3_key, initialized
     if initialized:
@@ -178,7 +212,7 @@ def init():
                      sageMakerEndpoint, topicArn, tableName, queue_url, s3_bucket, s3_key)
     except Exception:
         logging.exception("❌ Initialization failed")
-        time.sleep(10)  # 상위에서 재시도
+        time.sleep(10)
 
 def get_fcm_tokens(user_sub: str):
     with tracer.start_as_current_span("ddb.get_fcm_tokens") as span:
@@ -209,7 +243,6 @@ def invoke_sagemaker(endpoint: str, features):
             span.set_status(Status(StatusCode.ERROR, str(e)))
             raise
 
-    # S3에 features 저장(누적 CSV)
     with tracer.start_as_current_span("s3.append_features") as span, S3_APPEND_SECONDS.time():
         span.set_attribute("s3.bucket", s3_bucket or "")
         span.set_attribute("s3.key", s3_key or "")
@@ -229,7 +262,6 @@ def invoke_sagemaker(endpoint: str, features):
         except Exception as e:
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR, str(e)))
-            # 저장 실패해도 추론 결과는 반환
     return result
 
 def publish_sns(fcm_tokens):
@@ -237,10 +269,7 @@ def publish_sns(fcm_tokens):
         span.set_attribute("sns.topic", topicArn or "")
         if not fcm_tokens:
             return
-        sns_client.publish(
-            TopicArn=topicArn,
-            Message=json.dumps({"fcmTokens": fcm_tokens}),
-        )
+        sns_client.publish(TopicArn=topicArn, Message=json.dumps({"fcmTokens": fcm_tokens}))
         SNS_PUBLISH_TOTAL.inc()
 
 def receive_messages():
@@ -268,7 +297,6 @@ def delete_message(receipt_handle: str):
             logging.exception("❌ Failed to delete message")
 
 def process_message(record: dict):
-    """비즈 처리"""
     with tracer.start_as_current_span("biz.process_message") as span:
         try:
             body = json.loads(record["Body"]) if isinstance(record.get("Body"), str) else record["Body"]
@@ -304,7 +332,7 @@ def process_message(record: dict):
                 tokens = get_fcm_tokens(user_sub) if user_sub else []
                 publish_sns(tokens)
             MSG_PROCESSED_TOTAL.labels(result="success").inc()
-            return True  # 정상 처리
+            return True
         except Exception as e:
             logging.exception("❌ Error during message processing")
             MSG_PROCESSED_TOTAL.labels(result="error").inc()
@@ -314,13 +342,16 @@ def process_message(record: dict):
 
 # ─────────────────────────── 메인 루프 ───────────────────────────
 def main():
-    # 로깅
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+    # 1) 트레이싱 먼저 켠다 (X-Ray로 보내기 위한 필수 단계)
+    _init_tracing()
+
+    # 2) /health & /metrics 서버 시작 (Prometheus 스크레이프용)
     _start_health_server()
 
-
     logging.info("🚀 SQS receive Worker started")
-    # --- 초기화 재시도 루프 ---
+
     global initialized
     while not initialized and RUNNING:
         try:
@@ -331,7 +362,6 @@ def main():
         if not initialized:
             time.sleep(5)
 
-    # --- 메인 폴링 루프 ---
     while RUNNING:
         try:
             with tracer.start_as_current_span("sqs.poll"):
@@ -345,10 +375,7 @@ def main():
 
             for msg in messages:
                 logging.info(f"➡️ Processing message ID: {msg.get('MessageId','')}")
-                # 1) 메시지에서 컨텍스트 복원
                 ctx = _extract_ctx_from_sqs(msg)
-
-                # 2) 복원 컨텍스트로 "메시지 단위" 루트 스팬 시작
                 with tracer.start_as_current_span("sqs.process_message", context=ctx) as span:
                     span.set_attribute("sqs.message_id", msg.get("MessageId", ""))
                     ok = process_message(msg)

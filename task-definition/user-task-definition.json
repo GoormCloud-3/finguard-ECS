@@ -4,11 +4,14 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
   "memory": "2048",
+
   "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
+
   "volumes": [
-    { "name": "ecs-sd-vol" }  
+    { "name": "ecs-sd-vol" }
   ],
+
   "containerDefinitions": [
     {
       "name": "adot-collector",
@@ -17,15 +20,15 @@
       "environment": [
         { "name": "AWS_REGION", "value": "${AWS_REGION}" },
         { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" },
-        { "name": "METRICS_PORT", "value": "8000" },
         { "name": "SERVICE_NAMESPACE", "value": "finguard" },
         { "name": "ECS_CLUSTER_NAME", "value": "ecs-cluster" },
         { "name": "DEPLOY_ENV", "value": "prod" }
       ],
-      "user": "0",                                     
+      "user": "0",
       "mountPoints": [
-        { "sourceVolume": "ecs-sd-vol", "containerPath": "/sd", "readOnly": false }  
+        { "sourceVolume": "ecs-sd-vol", "containerPath": "/sd", "readOnly": false }
       ],
+      "essential": true,
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
@@ -34,22 +37,39 @@
           "awslogs-stream-prefix": "ecs",
           "awslogs-create-group": "true"
         }
-      },
-      "essential": true
+      }
     },
+
     {
       "name": "user-service",
       "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/user-service:${IMAGE_TAG}",
-      "dependsOn": [{ "containerName": "adot-collector", "condition": "START" }],
+      "dependsOn": [
+        { "containerName": "adot-collector", "condition": "START" }
+      ],
       "environment": [
+        { "name": "AWS_REGION", "value": "${AWS_REGION}" },
         { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
+
+        { "name": "OTEL_TRACES_EXPORTER", "value": "otlp" },
+        { "name": "OTEL_METRICS_EXPORTER", "value": "none" },
+
         { "name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "http://127.0.0.1:4317" },
         { "name": "OTEL_EXPORTER_OTLP_PROTOCOL", "value": "grpc" },
         { "name": "OTEL_PROPAGATORS", "value": "xray" },
         { "name": "OTEL_TRACES_SAMPLER", "value": "parentbased_always_on" },
         { "name": "OTEL_RESOURCE_ATTRIBUTES", "value": "service.name=user-service,service.namespace=finguard" }
       ],
-      "portMappings": [{ "containerPort": 8000, "protocol": "tcp" }],
+      "portMappings": [
+        { "containerPort": 8000, "protocol": "tcp" }
+      ],
+      "essential": true,
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"],
+        "interval": 10,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
@@ -57,13 +77,7 @@
           "awslogs-region": "${AWS_REGION}",
           "awslogs-stream-prefix": "ecs"
         }
-      },
-      "healthCheck": {
-        "command": ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"],
-        "interval": 10, "timeout": 5, "retries": 3, "startPeriod": 10
-      },
-      "essential": true
+      }
     }
   ]
 }
-

@@ -4,11 +4,12 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
   "memory": "2048",
+
   "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
-  "volumes": [
-    { "name": "ecs-sd-vol" }  
-  ],
+
+  "volumes": [{ "name": "ecs-sd-vol" }],
+
   "containerDefinitions": [
     {
       "name": "adot-collector",
@@ -21,10 +22,21 @@
         { "name": "DEPLOY_ENV", "value": "prod" },
         { "name": "ECS_CLUSTER_NAME", "value": "ecs-cluster" }
       ],
-      "user": "0",                                     
+
+      "user": "0",
       "mountPoints": [
-        { "sourceVolume": "ecs-sd-vol", "containerPath": "/sd", "readOnly": false }  
+        {
+          "sourceVolume": "ecs-sd-vol",
+          "containerPath": "/sd",
+          "readOnly": false
+        }
       ],
+
+      "portMappings": [
+        { "containerPort": 4317, "protocol": "tcp" },
+        { "containerPort": 4318, "protocol": "tcp" }
+      ],
+
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
@@ -36,20 +48,33 @@
       },
       "essential": true
     },
+
     {
       "name": "sqs-service",
       "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/sqs-service:${IMAGE_TAG}",
-      "dependsOn": [{ "containerName": "adot-collector", "condition": "START" }],
+
+      "dependsOn": [
+        { "containerName": "adot-collector", "condition": "START" }
+      ],
+
       "environment": [
         { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
-        { "name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "http://127.0.0.1:4317" },
+        { "name": "OTEL_TRACES_EXPORTER", "value": "otlp" },
+        { "name": "OTEL_METRICS_EXPORTER", "value": "none" },
+
         { "name": "OTEL_EXPORTER_OTLP_PROTOCOL", "value": "grpc" },
         { "name": "OTEL_PROPAGATORS", "value": "xray" },
         { "name": "OTEL_TRACES_SAMPLER", "value": "parentbased_always_on" },
-        { "name": "OTEL_RESOURCE_ATTRIBUTES", "value": "service.name=sqs-service,service.namespace=finguard" },
-        { "name": "HEALTH_PORT", "value": "8000" }  
+        {
+          "name": "OTEL_RESOURCE_ATTRIBUTES",
+          "value": "service.name=sqs-service,service.namespace=finguard"
+        },
+
+        { "name": "HEALTH_PORT", "value": "8000" }
       ],
+
       "portMappings": [{ "containerPort": 8000, "protocol": "tcp" }],
+
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
@@ -58,10 +83,18 @@
           "awslogs-stream-prefix": "ecs"
         }
       },
+
       "healthCheck": {
-        "command": ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"],
-        "interval": 10, "timeout": 5, "retries": 3, "startPeriod": 10
+        "command": [
+          "CMD-SHELL",
+          "curl -sf http://localhost:8000/health || exit 1"
+        ],
+        "interval": 10,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
       },
+
       "essential": true
     }
   ]

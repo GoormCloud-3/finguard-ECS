@@ -1,33 +1,52 @@
 # api/account.py
+import time
 import random
 import logging
 from uuid import uuid4
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 import anyio
 
 from models.schema import (
-    CreateAccountRequest, AccountResponse, AccountCreateResult,
-    AccountDetailResponse, GetAccountListRequest, GetAccountListResponse, TransactionItem
+    CreateAccountRequest,
+    AccountResponse,
+    AccountCreateResult,
+    AccountDetailResponse,
+    GetAccountListRequest,
+    GetAccountListResponse,
+    TransactionItem,
 )
 from db.rds import get_connection
 from db.dynamo import store_fcm_token
 
-# 🔁 X-Ray SDK 제거하고 OpenTelemetry 사용
+# OpenTelemetry
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
+# ── Prometheus
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+
 router = APIRouter()
-tracer = trace.get_tracer("account-service")  # 서비스명은 OTEL_RESOURCE_ATTRIBUTES로도 들어감
+tracer = trace.get_tracer("account-service")  # service.name은 OTEL_RESOURCE_ATTRIBUTES로도 들어감
 
+# ─────────────── Prometheus metrics ───────────────
+API_REQS = Counter(
+    "account_api_requests_total", "API calls", ["route", "method", "status"]
+)
+API_LATENCY = Histogram(
+    "account_api_latency_seconds", "API latency seconds", ["route", "method"]
+)
 
+def _observe(route: str, method: str, status: str, start_ts: float):
+    API_REQS.labels(route=route, method=method, status=status).inc()
+    API_LATENCY.labels(route=route, method=method).observe(time.perf_counter() - start_ts)
+
+# ─────────────── helpers ───────────────
 def generate_account_number() -> str:
     part1 = str(random.randint(100, 999))
     part2 = str(random.randint(100, 999))
     part3 = str(random.randint(10000, 99999))
     return f"{part1}-{part2}-{part3}"
-
-
-# ----- 스레드풀에서 실행될 순수 DB/비즈 함수 -----
 
 def _check_unique_account(conn, acc_num: str) -> bool:
     query = "SELECT 1 FROM accounts WHERE accountNumber = %s"
@@ -43,47 +62,68 @@ def _generate_unique_account_number(conn) -> str:
 
 def _insert_account(conn, params):
     with conn.cursor() as cursor:
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO accounts (
                 account_id, userSub, accountName, accountNumber, bankName, balance
             ) VALUES (%s, %s, %s, %s, %s, 0)
-        """, params)
+            """,
+            params,
+        )
         conn.commit()
 
 def _select_account(conn, account_id: str):
     with conn.cursor() as cursor:
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT account_id, accountName, accountNumber, balance, bankName
             FROM accounts WHERE account_id = %s
-        """, (account_id,))
+            """,
+            (account_id,),
+        )
         return cursor.fetchone()
 
 def _select_transactions(conn, account_id: str):
     with conn.cursor() as cursor:
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT transaction_id, date, time, description, amount, type
             FROM transactions WHERE account_id = %s
             ORDER BY date DESC, time DESC
-        """, (account_id,))
+            """,
+            (account_id,),
+        )
         return cursor.fetchall()
 
 def _select_accounts_by_user(conn, user_sub: str):
     with conn.cursor() as cursor:
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT account_id, accountName, accountNumber, balance, bankName
             FROM accounts WHERE userSub = %s
-        """, (user_sub,))
+            """,
+            (user_sub,),
+        )
         return cursor.fetchall()
 
+# ─────────────── metrics & health ───────────────
+@router.get("/metrics")
+def metrics():
+    # Prometheus receiver(ADOT)가 스크레이프하는 엔드포인트
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
-# ---------------------------- 라우트 ----------------------------
+@router.get("/health")
+def health():
+    return {"status": "ok"}
 
+# ─────────────── routes ───────────────
 @router.post("/accounts/create", response_model=AccountCreateResult)
 async def create_account(payload: CreateAccountRequest):
+    route, method = "/accounts/create", "POST"
+    t0 = time.perf_counter()
     logging.info("⚙️Starting createAccount API")
     conn = get_connection()
     try:
-        # 비즈: 고유 계좌번호 생성
         with tracer.start_as_current_span("biz.generate_unique_number") as span:
             try:
                 logging.info("Generating unique account number ...")
@@ -95,58 +135,59 @@ async def create_account(payload: CreateAccountRequest):
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
         logging.info(f"Generated account number: {account_number}")
-        
-        
-        # DB INSERT
+
         account_id = str(uuid4())
         with tracer.start_as_current_span("sql.insert_account") as span:
             logging.info("Inserting new account into database ... ")
-            span.set_attribute("db.system", "mysql")  # 사용 DB에 맞게
+            span.set_attribute("db.system", "mysql")
             span.set_attribute("db.statement", "INSERT INTO accounts(...) VALUES(...)")
             try:
                 await anyio.to_thread.run_sync(
                     _insert_account,
                     conn,
-                    (account_id, payload.userSub, payload.accountName, account_number, payload.bankName)
+                    (account_id, payload.userSub, payload.accountName, account_number, payload.bankName),
                 )
             except Exception as e:
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
 
-        return AccountCreateResult(
+        resp = AccountCreateResult(
             message="Account created successfully",
             account=AccountResponse(
                 accountId=account_id,
                 accountName=payload.accountName,
                 accountNumber=account_number,
-                balance=0
-            )
+                balance=0,
+            ),
         )
+        _observe(route, method, "200", t0)
+        return resp
     except Exception as e:
         logging.exception("createAccount failed")
+        _observe(route, method, "error", t0)
         raise HTTPException(status_code=400, detail="create_account ERROR : " + str(e))
     finally:
         if conn:
             conn.close()
 
-
 @router.get("/accounts/{account_id}", response_model=AccountDetailResponse)
 async def get_account(account_id: str):
+    route, method = "/accounts/{account_id}", "GET"
+    t0 = time.perf_counter()
     logging.info("⚙️Starting getAccount API")
     conn = get_connection()
     try:
-        # 계좌 상세
         with tracer.start_as_current_span("sql.select_account") as span:
             logging.info("Fetching account details from database ...")
             span.set_attribute("db.system", "mysql")
             span.set_attribute("db.statement", "SELECT ... FROM accounts WHERE account_id = ?")
             span.set_attribute("db.param.account_id", account_id)
             try:
-                logging.info(f"Fetching account details for account_id: {account_id}")
                 acc = await anyio.to_thread.run_sync(_select_account, conn, account_id)
                 if not acc:
                     logging.warning(f"Account not found: {account_id}")
+                    _observe(route, method, "404", t0)
                     raise HTTPException(status_code=404, detail="Account not found")
             except Exception as e:
                 if not isinstance(e, HTTPException):
@@ -155,14 +196,12 @@ async def get_account(account_id: str):
                     span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
 
-        # 거래 목록
         with tracer.start_as_current_span("sql.select_transactions") as span:
             logging.info("Fetching transactions from database ...")
             span.set_attribute("db.system", "mysql")
             span.set_attribute("db.statement", "SELECT ... FROM transactions WHERE account_id = ?")
             try:
                 txs = await anyio.to_thread.run_sync(_select_transactions, conn, account_id)
-                logging.info(f"Fetched {len(txs)} transactions for account_id: {account_id}")
             except Exception as e:
                 logging.exception("🚨Error fetching transactions")
                 span.record_exception(e)
@@ -176,35 +215,39 @@ async def get_account(account_id: str):
                 time=row["time"].strftime("%H:%M") if row["time"] else None,
                 description=row["description"],
                 amount=row["amount"],
-                type="credit" if row["type"] == "입금" else "debit"
-            ) for row in txs
+                type="credit" if row["type"] == "입금" else "debit",
+            )
+            for row in txs
         ]
 
-        return AccountDetailResponse(
+        resp = AccountDetailResponse(
             accountId=acc["account_id"],
             accountName=acc["accountName"],
             accountNumber=acc["accountNumber"],
             bankName=acc["bankName"],
             balance=acc["balance"],
-            transactions=transactions
+            transactions=transactions,
         )
-    except HTTPException:
-        logging.warning(f"🚨HTTPException raised for account_id: {account_id}")
+        _observe(route, method, "200", t0)
+        return resp
+    except HTTPException as e:
+        _observe(route, method, str(e.status_code), t0)
         raise
     except Exception as e:
         logging.exception("🚨getAccount failed")
+        _observe(route, method, "error", t0)
         raise HTTPException(status_code=400, detail="get_account ERROR : " + str(e))
     finally:
         if conn:
             conn.close()
 
-
 @router.post("/accounts/financial", response_model=GetAccountListResponse)
 async def get_account_list(payload: GetAccountListRequest):
+    route, method = "/accounts/financial", "POST"
+    t0 = time.perf_counter()
     logging.info("⚙️Starting getAccountList API")
     conn = get_connection()
     try:
-        # DynamoDB 호출 (boto3 자동계측 쓰면 span 자동 생성됨. 수동으로도 감싸두자
         with tracer.start_as_current_span("ddb.store_fcm_token") as span:
             try:
                 logging.info("Storing FCM token in DynamoDB ...")
@@ -216,13 +259,11 @@ async def get_account_list(payload: GetAccountListRequest):
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
 
-        # 계좌 목록 조회
         with tracer.start_as_current_span("sql.select_accounts_by_userSub") as span:
             logging.info("Fetching accounts from database ...")
             span.set_attribute("db.system", "mysql")
             span.set_attribute("db.statement", "SELECT ... FROM accounts WHERE userSub = ?")
             try:
-                logging.info(f"Fetching accounts for userSub: {payload.sub}")
                 accounts = await anyio.to_thread.run_sync(_select_accounts_by_user, conn, payload.sub)
             except Exception as e:
                 logging.exception("🚨Error fetching accounts")
@@ -230,7 +271,7 @@ async def get_account_list(payload: GetAccountListRequest):
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
 
-        return GetAccountListResponse(
+        resp = GetAccountListResponse(
             sub=payload.sub,
             accounts=[
                 AccountResponse(
@@ -238,12 +279,16 @@ async def get_account_list(payload: GetAccountListRequest):
                     accountName=row["accountName"],
                     accountNumber=row["accountNumber"],
                     bankName=row["bankName"],
-                    balance=row["balance"]
-                ) for row in accounts
-            ]
+                    balance=row["balance"],
+                )
+                for row in accounts
+            ],
         )
+        _observe(route, method, "200", t0)
+        return resp
     except Exception as e:
         logging.exception("🚨getAccountList failed")
+        _observe(route, method, "error", t0)
         raise HTTPException(status_code=400, detail="get_account_list ERROR : " + str(e))
     finally:
         if conn:

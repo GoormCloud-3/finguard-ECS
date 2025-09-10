@@ -24,6 +24,7 @@ class TransactionMap(BaseModel):
     debit: TransactionDetail
     credit: TransactionDetail
 
+
 class TransactionSuccessResponse(BaseModel):
     message: str
     transactions: TransactionMap

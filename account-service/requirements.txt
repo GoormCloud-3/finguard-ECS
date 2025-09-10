@@ -1,20 +1,28 @@
-fastapi
-uvicorn==0.35.0
-pymysql
-boto3            # SNS, SQS 연동 시 필요
-python-dotenv    # 환경변수 관리
-# aws-xray-sdk>=2.14.0       # X-Ray 연동
+# ── Core AWS/HTTP ─────────────────────────
+boto3>=1.34,<2
+botocore>=1.34,<2
+requests>=2.31,<3
 
-# OpenTelemetry core
-opentelemetry-sdk==1.26.0
-opentelemetry-exporter-otlp==1.26.0
-opentelemetry-propagator-aws-xray==1.0.1
+# ── FastAPI stack ─────────────────────────
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+anyio>=4.2,<5
+pydantic>=2.6,<3
+PyMySQL>=1.1,<2
 
-# Auto-instrumentations
-opentelemetry-instrumentation-fastapi==0.47b0
-opentelemetry-instrumentation-requests==0.47b0
-opentelemetry-instrumentation-botocore==0.47b0
-prometheus-client==0.20.0
+# ── Prometheus metrics (/metrics) ─────────
+prometheus-client>=0.20,<1
 
-opentelemetry-instrumentation==0.47b0
-opentelemetry-instrumentation-asgi
+# ── OpenTelemetry (SDK/OTLP/자동계측) ──────
+opentelemetry-api~=1.25.0
+opentelemetry-sdk~=1.25.0
+opentelemetry-exporter-otlp-proto-grpc~=1.25.0
+opentelemetry-instrumentation~=0.46b0
+opentelemetry-instrumentation-fastapi~=0.46b0
+opentelemetry-instrumentation-requests~=0.46b0
+opentelemetry-instrumentation-urllib3~=0.46b0
+opentelemetry-instrumentation-botocore~=0.46b0
+
+# ── AWS 전파자/리소스 감지 ────────────────
+opentelemetry-propagator-aws-xray>=1.0.0,<2.0.0
+opentelemetry-resource-detector-aws>=1.0.0,<2.0.0

@@ -6,6 +6,7 @@ import signal
 import time
 import base64
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import boto3
@@ -18,12 +19,12 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 # Prometheus metrics (전역)
 FCM_PROCESSED = Counter("fcm_processed_total", "FCM messages processed", ["mode"])  # mode: single|topic|condition
-FCM_ERRORS    = Counter("fcm_errors_total",    "Errors while processing")
+FCM_ERRORS    = Counter("fcm_errors_total", "Errors while processing")
 SQS_POLL_SIZE = Histogram("sqs_poll_batch_size", "Messages received per poll", buckets=(0, 1, 2, 5, 10))
-FCM_SEND_SEC  = Histogram("fcm_send_seconds",  "Firebase send latency (s)")
+FCM_SEND_SEC  = Histogram("fcm_send_seconds", "Firebase send latency (s)")
 
 # ---------- Health ----------
-HEALTH_PORT = int(os.getenv("HEALTH_PORT", "9400"))
+HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8000"))
 
 class _Health(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -87,25 +88,95 @@ tracer = trace.get_tracer("fcm-service")  # service.name은 OTEL_RESOURCE_ATTRIB
 class _SQSAttrGetter(Getter):
     """SNS→SQS MessageAttributes에서 전파 헤더를 꺼내기 위한 Getter"""
     def get(self, carrier, key):
-        attrs = carrier.get("MessageAttributes") or {}
-        # X-Ray/W3C 둘 다 시도
+        attrs = (carrier or {}).get("MessageAttributes") or {}
         for k in (key, key.title(), key.upper(), "X-Amzn-Trace-Id", "traceparent"):
             v = attrs.get(k)
             if isinstance(v, dict) and "StringValue" in v:
                 return [v["StringValue"]]
         return []
     def keys(self, carrier):
-        attrs = carrier.get("MessageAttributes") or {}
+        attrs = (carrier or {}).get("MessageAttributes") or {}
         return list(attrs.keys())
 
 _SQS_GETTER = _SQSAttrGetter()
+
+def _discover_task_ip_from_metadata() -> str | None:
+    """ECS 메타데이터(v4)에서 태스크 ENI IP를 찾아서 반환"""
+    uri = os.getenv("ECS_CONTAINER_METADATA_URI_V4")
+    if not uri:
+        return None
+    try:
+        with urllib.request.urlopen(f"{uri}/task", timeout=1.5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        # 현재 컨테이너 외에도 ‘태스크’의 공용 ENI IP를 아무 컨테이너에서나 얻을 수 있음
+        for c in data.get("Containers", []):
+            nets = c.get("Networks") or []
+            for n in nets:
+                ips = n.get("IPv4Addresses") or []
+                if ips:
+                    return ips[0]
+    except Exception as e:
+        logger.warning(f"ECS 메타데이터에서 태스크 IP 탐지 실패: {e}")
+    return None
+
+def _init_tracing():
+    """
+    OTLP gRPC로 ADOT Collector에 전송되도록 SDK 초기화.
+    - 엔드포인트 우선순위: OTEL_EXPORTER_OTLP_ENDPOINT env -> (없으면) 태스크 IP:4317 자동
+    - 가능하면 X-Ray ID 생성기도 적용 (없어도 동작은 함)
+    """
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if not endpoint:
+        ip = _discover_task_ip_from_metadata()
+        if ip:
+            endpoint = f"http://{ip}:4317"
+            os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint  # 추후 참조 위해 세팅
+            logger.info(f"🔎 OTLP endpoint 자동 설정: {endpoint}")
+    if not endpoint:
+        logger.warning("⚠️ OTEL_EXPORTER_OTLP_ENDPOINT 미설정, 트레이스 내보내기 비활성화")
+        return
+
+    try:
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+
+        # 가능한 경우 X-Ray ID 생성기 사용 (없어도 OK)
+        id_generator = None
+        try:
+            from opentelemetry.sdk.extension.aws.trace import AwsXRayIdGenerator
+            id_generator = AwsXRayIdGenerator()
+            logger.info("🧩 AwsXRayIdGenerator 활성화")
+        except Exception:
+            logger.info("🧩 AwsXRayIdGenerator 미사용(패키지 없음). 기본 ID 사용")
+
+        resource = Resource.create({
+            "service.name": os.getenv("OTEL_SERVICE_NAME", "fcm-service"),
+            "service.namespace": "finguard",
+        })
+
+        provider = TracerProvider(resource=resource, id_generator=id_generator)
+        exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+        global tracer
+        tracer = trace.get_tracer("fcm-service")
+
+        # 환경도 맞춰주면 좋음
+        os.environ.setdefault("OTEL_TRACES_EXPORTER", "otlp")
+        os.environ.setdefault("OTEL_PROPAGATORS", "xray")
+
+        logger.info(f"✅ OpenTelemetry 트레이싱 초기화 완료 → {endpoint}")
+    except Exception as e:
+        logger.error(f"❌ OTel 트레이싱 초기화 실패: {e}")
 
 # ---------- Firebase credentials ----------
 def _init_firebase_admin():
     """
     우선순위:
     1) FIREBASE_SA_JSON (raw JSON 또는 base64)
-    2) FIREBASE_SA_PARAM (SSM 파라미터 이름)  ← 백업 경로
+    2) FIREBASE_SA_PARAM (SSM 파라미터 이름)
     3) FIREBASE_CRED_FILE (기본: service-account-key.json)
     """
     sa_env   = os.getenv("FIREBASE_SA_JSON")
@@ -271,7 +342,7 @@ IDLE_RESET   = int(os.getenv("IDLE_RESET", "5"))
 
 def run_forever():
     logger.info("🚀 FCM 워커 시작 (상시 폴링 모드)")
-    
+    _init_tracing()         # ★ 트레이싱 먼저
     logging.info("🔐 Firebase Admin SDK 초기화 시도 ...")
     _init_firebase_admin()
     logging.info("✅ Firebase Admin SDK 초기화 완료")
@@ -284,7 +355,7 @@ def run_forever():
         if n == 0:
             logging.info("⏳ No messages, polling again ...")
             empty = min(empty + 1, IDLE_RESET)
-            sleep_s = min(BACKOFF_BASE ** empty, BACKOFF_MAX)
+            sleep_s = min(BACKOFF_BASE**empty, BACKOFF_MAX)
             logger.debug(f"😴 빈 폴링: {empty}회, {sleep_s}s 대기")
             time.sleep(sleep_s)
         else:
