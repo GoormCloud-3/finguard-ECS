@@ -16,8 +16,6 @@ receivers:
     config:
       global:
         scrape_interval: 15s
-        evaluation_interval: 15s
-        honor_labels: true
       scrape_configs:
         - job_name: app
           file_sd_configs:
@@ -31,8 +29,6 @@ receivers:
               target_label: instance
               action: replace
           metrics_path: /metrics
-      resource_to_telemetry_conversion:
-        enabled: true
   awsecscontainermetrics: {}
 
 processors:
