@@ -27,6 +27,10 @@
           "readOnly": false
         }
       ],
+      "portMappings": [
+        { "containerPort": 4317, "protocol": "tcp" },
+        { "containerPort": 4318, "protocol": "tcp" }
+      ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
@@ -44,7 +48,7 @@
       "dependsOn": [
         { "containerName": "adot-collector", "condition": "START" }
       ],
-      "command": ["opentelemetry-instrument", "python", "-m", "worker"],
+      
       "environment": [
         { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
         { "name": "OTEL_TRACES_EXPORTER", "value": "otlp" },
