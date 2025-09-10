@@ -1,32 +1,25 @@
-# ---- Base: 안정적인 3.11-slim 권장
 FROM python:3.11-slim
 
-# ---- 기본 ENV (역슬래시 뒤 공백 절대 금지!)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    AWS_DEFAULT_REGION=ap-northeast-2 \
-    OTEL_TRACES_EXPORTER=otlp \
-    OTEL_METRICS_EXPORTER=none \
-    OTEL_PROPAGATORS=xray
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    AWS_DEFAULT_REGION=ap-northeast-2
 
 WORKDIR /app
 
-# ---- 필수 패키지(인증서/헬스체크용 curl)
+# 기본 SSL CA/네트워킹 유틸
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
-# ---- 파이썬 의존성
+# 먼저 의존성 설치(레이어 캐시를 위해 requirements만 복사)
 COPY requirements.txt .
 RUN python -m pip install --upgrade pip setuptools wheel && \
     pip install --no-cache-dir -r requirements.txt
 
-# ---- 앱 소스
+# 앱 복사
 COPY ./app /app
 ENV PYTHONPATH=/app
 
-# ---- 실행 (서비스명만 바꿔서 빌드별로 사용)
-#    예) user-service / account-service / transaction-service
-CMD ["opentelemetry-instrument", \
-     "--service_name", "transaction-service", \
-     "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# OTel 실행(서비스명은 각 서비스 이미지에서 바꾸세요: account-service/user-service/transaction-service)
+CMD ["opentelemetry-instrument", "--traces_exporter", "otlp", "--metrics_exporter", "none", "--service_name", "transaction-service", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
