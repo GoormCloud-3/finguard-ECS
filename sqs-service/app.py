@@ -17,7 +17,7 @@ from opentelemetry import trace
 from opentelemetry.propagate import extract, set_global_textmap
 from opentelemetry.propagators.textmap import Getter
 
-from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.resources import Resource, Status, StatusCode
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -249,17 +249,21 @@ def invoke_sagemaker(endpoint: str, features):
         try:
             try:
                 obj = s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
-                df_existing = pd.read_csv(io.BytesIO(obj["Body"].read()))
+                df_existing = pd.read_csv(io.BytesIO(obj["Body"].read()), header=None)
             except s3_client.exceptions.NoSuchKey:
                 df_existing = pd.DataFrame()
 
-            prediction = result.get("prediction")  # just to ensure 'prediction' exists
-            features.append(prediction)
+            prediction = [result.get("prediction")]
+            
+            features = features + prediction
+            features[:3] = [float(x) for x in features[:3]]
+            logging.info(f"✅ Features + Prediction: {features}")
+            
             df_new = pd.DataFrame([features])
             df_total = pd.concat([df_existing, df_new], ignore_index=True)
 
             csv_buffer = io.StringIO()
-            df_total.to_csv(csv_buffer, index=False)
+            df_total.to_csv(csv_buffer, header=False, index=False)
             s3_client.put_object(Bucket=s3_bucket, Key=s3_key, Body=csv_buffer.getvalue())
         except Exception as e:
             span.record_exception(e)
