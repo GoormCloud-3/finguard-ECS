@@ -389,9 +389,9 @@ async def create_transaction(payload: TransactionRequest, request: Request):
                 # 9) SQS 전송 (+ **컨텍스트 수동 주입**)
                 with tracer.start_as_current_span("sqs.send_message"):
                     features = [
-                        distance_from_home,
-                        distance_from_last,
-                        ratio_to_median,
+                        float(distance_from_home),
+                        float(distance_from_last),
+                        float(ratio_to_median),
                         repeat_retailer,
                         used_chip,
                     ]

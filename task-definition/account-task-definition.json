@@ -28,13 +28,6 @@
           "readOnly": false
         }
       ],
-      "healthCheck": {
-        "command": ["CMD-SHELL", "curl -sf http://127.0.0.1:13133/ || exit 1"],
-        "interval": 10,
-        "timeout": 5,
-        "retries": 3,
-        "startPeriod": 10
-      },
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {

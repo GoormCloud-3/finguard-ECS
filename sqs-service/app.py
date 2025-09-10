@@ -253,6 +253,8 @@ def invoke_sagemaker(endpoint: str, features):
             except s3_client.exceptions.NoSuchKey:
                 df_existing = pd.DataFrame()
 
+            prediction = result.get("prediction")  # just to ensure 'prediction' exists
+            features.append(prediction)
             df_new = pd.DataFrame([features])
             df_total = pd.concat([df_existing, df_new], ignore_index=True)
 
