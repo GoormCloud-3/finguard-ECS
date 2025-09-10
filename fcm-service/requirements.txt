@@ -25,3 +25,5 @@ pymysql
 
 # FCM
 firebase-admin==6.5.0
+
+whatap-python

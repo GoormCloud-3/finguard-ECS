@@ -25,3 +25,5 @@ pymysql
 
 # S3 CSV
 pandas==2.2.2
+
+whatap-python
