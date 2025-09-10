@@ -346,6 +346,8 @@ def run_forever():
     logging.info("🔐 Firebase Admin SDK 초기화 시도 ...")
     _init_firebase_admin()
     logging.info("✅ Firebase Admin SDK 초기화 완료")
+    _start_health_server()
+    logging.info("✅ 헬스체크 서버 시작 완료")
 
     empty = 0
     while not _SHOULD_STOP:
@@ -364,5 +366,4 @@ def run_forever():
     logger.info("🔚 안전 종료 완료")
 
 if __name__ == "__main__":
-    _start_health_server()
     run_forever()
