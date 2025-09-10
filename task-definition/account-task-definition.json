@@ -43,7 +43,7 @@
       "name": "account-service",
       "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/account-service:${IMAGE_TAG}",
       "dependsOn": [
-        { "containerName": "adot-collector", "condition": "HEALTHY" }
+        { "containerName": "adot-collector", "condition": "START" }
       ],
       "environment": [
         { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
