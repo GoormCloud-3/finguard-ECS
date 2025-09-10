@@ -46,12 +46,9 @@
       ],
       "command": ["opentelemetry-instrument", "python", "-m", "worker"],
       "environment": [
+        { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
         { "name": "OTEL_TRACES_EXPORTER", "value": "otlp" },
         { "name": "OTEL_METRICS_EXPORTER", "value": "none" },
-        {
-          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-          "value": "http://ADOT_COLLECTOR_IP:4317"
-        },
         { "name": "OTEL_EXPORTER_OTLP_PROTOCOL", "value": "grpc" },
         { "name": "OTEL_PROPAGATORS", "value": "xray" },
         { "name": "OTEL_TRACES_SAMPLER", "value": "parentbased_always_on" },
