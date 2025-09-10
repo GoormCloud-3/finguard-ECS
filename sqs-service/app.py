@@ -1,3 +1,11 @@
+# app.py (맨 위 가장 먼저 위치)
+try:
+    import whatap
+    whatap.agent()
+    logging.info("✅Whatap agent initialized")
+except Exception as e:
+    # whatap 미설치/실패 시 앱이 죽지 않도록만 보호 (원치 않으면 이 블록도 지워도 됨)
+    logging.error(f"✅Whatap init failed: {e}")
 # app.py
 import os
 import json
@@ -17,7 +25,8 @@ from opentelemetry import trace
 from opentelemetry.propagate import extract, set_global_textmap
 from opentelemetry.propagators.textmap import Getter
 
-from opentelemetry.sdk.resources import Resource, Status, StatusCode
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.trace import Status, StatusCode
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter

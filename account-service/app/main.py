@@ -1,8 +1,9 @@
 # main.py
+import whatap
+whatap.agent()
 from fastapi import FastAPI, Request
 import logging
 import time
-
 # ─────────────────────────────────────────────────────────
 # 0) 로깅 기본 설정
 # ─────────────────────────────────────────────────────────

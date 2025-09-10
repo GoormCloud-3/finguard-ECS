@@ -1,4 +1,7 @@
 # main.py
+import whatap
+whatap.agent()
+
 from fastapi import FastAPI, Request
 import logging
 import time
