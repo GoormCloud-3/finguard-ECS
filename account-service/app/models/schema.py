@@ -1,7 +1,8 @@
 # models/schema.py
 from pydantic import BaseModel
-from typing import List, Optional
-from datetime import date, time
+from typing import List, Optional, Union, Literal
+from datetime import date as Date, time as Time
+
 
 class CreateAccountRequest(BaseModel):
     userSub: str
@@ -11,11 +12,11 @@ class CreateAccountRequest(BaseModel):
 
 class TransactionItem(BaseModel):
     id: str
-    date: Optional[date]   # <-- str 대신 date
-    time: Optional[time]   # <-- str 대신 time
+    date: Optional[Union[str, Date]] = None
+    time: Optional[Union[str, Time]] = None
     description: str
     amount: float
-    type: str  # "credit" | "debit"
+    type: Literal["credit", "debit"]
 
 
 class AccountResponse(BaseModel):
