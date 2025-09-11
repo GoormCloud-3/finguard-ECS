@@ -145,7 +145,7 @@ def _apply_transfer(
     conn,
     my_account_id: str,
     counter_account_id: str,
-    amount: float,
+    amount: int, ##수정
     description: str,
     gps_wkt: str,
 ) -> tuple[str, str]:
