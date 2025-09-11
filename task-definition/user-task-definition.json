@@ -4,38 +4,30 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
   "memory": "2048",
-
   "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
-
-  "volumes": [
-    { "name": "ecs-sd-vol" }
-  ],
-
+  "volumes": [{ "name": "ecs-sd-vol" }],
   "containerDefinitions": [
     {
       "name": "adot-collector",
       "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest",
       "command": ["--config=/etc/ecs/otel-config.yaml"],
-      "secrets": [
-        { "name": "WHATAP_LICENSE", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/finguard/dev/finance/whaTapAccessKey" }                 
-      ],
       "environment": [
-        { "name": "WHATAP_HOSTS", "value": "13.124.11.223/13.209.172.35" },
-        { "name": "WHATAP_APP_NAME", "value": "user-service" },
-        { "name": "WHATAP_PROCESS_NAME", "value": "uvicorn" },
-        
         { "name": "AWS_REGION", "value": "${AWS_REGION}" },
-        { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" },
-        { "name": "SERVICE_NAMESPACE", "value": "finguard" },
         { "name": "ECS_CLUSTER_NAME", "value": "ecs-cluster" },
+        { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" },
+        { "name": "METRICS_PORT", "value": "8000" },
+        { "name": "SERVICE_NAMESPACE", "value": "finguard" },
         { "name": "DEPLOY_ENV", "value": "prod" }
       ],
       "user": "0",
       "mountPoints": [
-        { "sourceVolume": "ecs-sd-vol", "containerPath": "/sd", "readOnly": false }
+        {
+          "sourceVolume": "ecs-sd-vol",
+          "containerPath": "/sd",
+          "readOnly": false
+        }
       ],
-      "essential": true,
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
@@ -44,7 +36,8 @@
           "awslogs-stream-prefix": "ecs",
           "awslogs-create-group": "true"
         }
-      }
+      },
+      "essential": true
     },
 
     {
@@ -53,30 +46,35 @@
       "dependsOn": [
         { "containerName": "adot-collector", "condition": "START" }
       ],
+      "secrets": [
+        {
+          "name": "WHATAP_LICENSE",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/finguard/dev/finance/whaTapAccessKey"
+        }
+      ],
       "environment": [
-        { "name": "AWS_REGION", "value": "${AWS_REGION}" },
-        { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
+        { "name": "WHATAP_HOSTS", "value": "13.124.11.223/13.209.172.35" },
+        { "name": "WHATAP_APP_NAME", "value": "user-service" },
+        { "name": "WHATAP_PROCESS_NAME", "value": "uvicorn" },
 
+        { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
         { "name": "OTEL_TRACES_EXPORTER", "value": "otlp" },
         { "name": "OTEL_METRICS_EXPORTER", "value": "none" },
 
-        { "name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "http://127.0.0.1:4317" },
+        {
+          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "value": "http://127.0.0.1:4317"
+        },
         { "name": "OTEL_EXPORTER_OTLP_PROTOCOL", "value": "grpc" },
         { "name": "OTEL_PROPAGATORS", "value": "xray" },
         { "name": "OTEL_TRACES_SAMPLER", "value": "parentbased_always_on" },
-        { "name": "OTEL_RESOURCE_ATTRIBUTES", "value": "service.name=user-service,service.namespace=finguard" }
+        {
+          "name": "OTEL_RESOURCE_ATTRIBUTES",
+          "value": "service.name=user-service,service.namespace=finguard"
+        },
+        { "name": "HEALTH_PORT", "value": "8000" }
       ],
-      "portMappings": [
-        { "containerPort": 8000, "protocol": "tcp" }
-      ],
-      "essential": true,
-      "healthCheck": {
-        "command": ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"],
-        "interval": 10,
-        "timeout": 5,
-        "retries": 3,
-        "startPeriod": 10
-      },
+      "portMappings": [{ "containerPort": 8000, "protocol": "tcp" }],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
@@ -84,7 +82,18 @@
           "awslogs-region": "${AWS_REGION}",
           "awslogs-stream-prefix": "ecs"
         }
-      }
+      },
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -sf http://localhost:8000/health || exit 1"
+        ],
+        "interval": 10,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+      "essential": true      
     }
   ]
 }

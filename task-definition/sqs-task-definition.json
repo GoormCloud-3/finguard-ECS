@@ -4,32 +4,21 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
   "memory": "2048",
-
   "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
-
   "volumes": [{ "name": "ecs-sd-vol" }],
-
   "containerDefinitions": [
     {
       "name": "adot-collector",
       "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest",
       "command": ["--config=/etc/ecs/otel-config.yaml"],
-      "secrets": [
-        { "name": "WHATAP_LICENSE", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/finguard/dev/finance/whaTapAccessKey" }                 
-      ],
       "environment": [
-        { "name": "WHATAP_HOSTS", "value": "13.124.11.223/13.209.172.35" },
-        { "name": "WHATAP_APP_NAME", "value": "sqs-service" },
-        { "name": "WHATAP_PROCESS_NAME", "value": "python" },
-        
         { "name": "AWS_REGION", "value": "${AWS_REGION}" },
         { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" },
         { "name": "SERVICE_NAMESPACE", "value": "finguard" },
         { "name": "DEPLOY_ENV", "value": "prod" },
         { "name": "ECS_CLUSTER_NAME", "value": "ecs-cluster" }
       ],
-
       "user": "0",
       "mountPoints": [
         {
@@ -38,7 +27,6 @@
           "readOnly": false
         }
       ],
-
       "portMappings": [
         { "containerPort": 4317, "protocol": "tcp" },
         { "containerPort": 4318, "protocol": "tcp" }
@@ -63,12 +51,20 @@
       "dependsOn": [
         { "containerName": "adot-collector", "condition": "START" }
       ],
-
+      "secrets": [
+        {
+          "name": "WHATAP_LICENSE",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/finguard/dev/finance/whaTapAccessKey"
+        }
+      ],
       "environment": [
+        { "name": "WHATAP_HOSTS", "value": "13.124.11.223/13.209.172.35" },
+        { "name": "WHATAP_APP_NAME", "value": "sqs-service" },
+        { "name": "WHATAP_PROCESS_NAME", "value": "python" },
+
         { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
         { "name": "OTEL_TRACES_EXPORTER", "value": "otlp" },
         { "name": "OTEL_METRICS_EXPORTER", "value": "none" },
-
         { "name": "OTEL_EXPORTER_OTLP_PROTOCOL", "value": "grpc" },
         { "name": "OTEL_PROPAGATORS", "value": "xray" },
         { "name": "OTEL_TRACES_SAMPLER", "value": "parentbased_always_on" },
@@ -90,7 +86,6 @@
           "awslogs-stream-prefix": "ecs"
         }
       },
-
       "essential": true
     }
   ]

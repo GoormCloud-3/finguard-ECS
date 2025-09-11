@@ -59,7 +59,7 @@
           "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/finguard/dev/finance/whaTapAccessKey"
         }
       ],
-      
+
       "environment": [
         { "name": "WHATAP_HOSTS", "value": "13.124.11.223/13.209.172.35" },
         { "name": "WHATAP_APP_NAME", "value": "fcm-service" },
