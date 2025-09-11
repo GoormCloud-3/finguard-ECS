@@ -11,7 +11,7 @@ on:
 env:
   AWS_REGION: ap-northeast-2
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-  AWS_SUBNETS: ${{ secrets.AWS_SUBNETS }}               # "subnet-aaa,subnet-bbb"
+  AWS_SUBNETS: ${{ secrets.AWS_SUBNETS }} # "subnet-aaa,subnet-bbb"
   AWS_SECURITY_GROUPS: ${{ secrets.AWS_SECURITY_GROUPS }} # "sg-xxx,sg-yyy"
   CLUSTER_NAME: ecs-cluster
   SERVICES: account-service,transaction-service,user-service,sqs-service,fcm-service
@@ -224,12 +224,16 @@ jobs:
                   --load-balancers targetGroupArn="$TG_ARN",containerName="$CONTAINER_NAME",containerPort=$CONTAINER_PORT \
                   --health-check-grace-period-seconds 60 \
                   --force-new-deployment
+                  --enable-execute-command
+
               else
                 aws ecs update-service \
                   --cluster "$CLUSTER_NAME" \
                   --service "$svc" \
                   --task-definition "$TASK_DEF_NAME" \
                   --force-new-deployment
+                  --enable-execute-command
+
               fi
             else
               # ── 생성 ───────────────────────────────────────
@@ -256,7 +260,6 @@ jobs:
               fi
             fi
           done
-
 
       - name: Configure Auto Scaling
         run: |

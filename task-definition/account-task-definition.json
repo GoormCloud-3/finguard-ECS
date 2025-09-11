@@ -1,7 +1,6 @@
 {
   "family": "account-task",
   "networkMode": "awsvpc",
-  "enableExecuteCommand": true,
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
   "memory": "2048",
