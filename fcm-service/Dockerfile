@@ -23,11 +23,11 @@ COPY . .
 
 # Whatap 설치 및 설정
 RUN pip install --no-cache-dir whatap-python && \
-    mkdir -p /whatap && \
-    touch /whatap/whatap.conf && \
-    echo "license=[ACCESS_KEY]" > /whatap/whatap.conf && \
-    echo "whatap.server.host=[COLLECTION_SERVER_IP]" >> /whatap/whatap.conf && \
-    echo "app_name=fcm-service" >> /whatap/whatap.conf && \
-    echo "app_process_name=python" >> /whatap/whatap.conf
-    
+    mkdir -p /whatap 
+
+# 실행 시 환경변수로 whatap.conf 생성
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+
 CMD ["whatap-start-agent","opentelemetry-instrument","--traces_exporter","otlp","--metrics_exporter","none","--service_name","fcm-service","python","worker.py"]

@@ -24,13 +24,13 @@ ENV PYTHONPATH=/app
 
 # Whatap 설치 및 설정
 RUN pip install --no-cache-dir whatap-python && \
-    mkdir -p /whatap && \
-    touch /whatap/whatap.conf && \
-    echo "license=[ACCESS_KEY]" > /whatap/whatap.conf && \
-    echo "whatap.server.host=[COLLECTION_SERVER_IP]" >> /whatap/whatap.conf && \
-    echo "app_name=[AGENT_NAME]" >> /whatap/whatap.conf && \
-    echo "app_process_name=python" >> /whatap/whatap.conf
+    mkdir -p /whatap 
+
+# 실행 시 환경변수로 whatap.conf 생성
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # OTel 실행(서비스명은 각 서비스 이미지에서 바꾸세요: account-service/user-service/transaction-service)
-# CMD ["opentelemetry-instrument", "--traces_exporter", "otlp", "--metrics_exporter", "none", "--service_name", "user-service", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# CMD ["opentelemetry-instrument", "--traces_exporter", "otlp", "--metrics_exporter", "none", "--service_name", "account-service", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 CMD ["whatap-start-agent","opentelemetry-instrument","--traces_exporter","otlp","--metrics_exporter","none","--service_name","user-service","uvicorn","main:app","--host","0.0.0.0","--port","8000"]

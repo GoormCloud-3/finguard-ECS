@@ -45,7 +45,14 @@
       "dependsOn": [
         { "containerName": "adot-collector", "condition": "START" }
       ],
+      "secrets": [
+        { "name": "WHATAP_LICENSE", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/finguard/dev/finance/whaTapAccessKey" }                 
+      ],
       "environment": [
+        { "name": "WHATAP_HOSTS", "value": "13.124.11.223/13.209.172.35" },
+        { "name": "WHATAP_APP_NAME", "value": "account-service" },
+        { "name": "WHATAP_PROCESS_NAME", "value": "uvicorn" },
+
         { "name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}" },
         { "name": "OTEL_TRACES_EXPORTER", "value": "otlp" },
         { "name": "OTEL_METRICS_EXPORTER", "value": "none" },

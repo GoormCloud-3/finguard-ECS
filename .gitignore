@@ -147,7 +147,9 @@ env.bak/
 venv.bak/
 .whatap
 whatap/
-
+whatap.conf
+*.pem
+*.key
 
 # Spyder project settings
 .spyderproject

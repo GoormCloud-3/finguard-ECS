@@ -15,7 +15,14 @@
       "name": "adot-collector",
       "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adot-collector:latest",
       "command": ["--config=/etc/ecs/otel-config.yaml"],
+      "secrets": [
+        { "name": "WHATAP_LICENSE", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/finguard/dev/finance/whaTapAccessKey" }                 
+      ],
       "environment": [
+        { "name": "WHATAP_HOSTS", "value": "13.124.11.223/13.209.172.35" },
+        { "name": "WHATAP_APP_NAME", "value": "sqs-service" },
+        { "name": "WHATAP_PROCESS_NAME", "value": "python" },
+        
         { "name": "AWS_REGION", "value": "${AWS_REGION}" },
         { "name": "AMP_WORKSPACE_ID", "value": "${AMP_WORKSPACE_ID}" },
         { "name": "SERVICE_NAMESPACE", "value": "finguard" },
