@@ -1,5 +1,5 @@
-import whatap
-whatap.agent()  # ← 최우선 초기화
+# import whatap
+# whatap.agent()  # ← 최우선 초기화
 
 # worker.py
 import os
@@ -264,6 +264,7 @@ def poll_sqs_once() -> int:
                     MaxNumberOfMessages=10,
                     WaitTimeSeconds=20,
                     VisibilityTimeout=60,
+                    AttributeNames=["All"],
                     MessageAttributeNames=["All"],
                 )
                 span.set_attribute("sqs.queue", QUEUE_URL.split("/")[-1])

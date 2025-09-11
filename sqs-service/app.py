@@ -1,5 +1,5 @@
-import whatap
-whatap.agent()  # ← 최우선 초기화
+# import whatap
+# whatap.agent()  # ← 최우선 초기화
 # app.py
 import os
 import json
@@ -252,7 +252,7 @@ def invoke_sagemaker(endpoint: str, features):
         try:
             try:
                 obj = s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
-                df_existing = pd.read_csv(io.BytesIO(obj["Body"].read()), header=None)
+                df_existing = pd.read_csv(io.BytesIO(obj["Body"].read()), header=None, dtype=str)
             except s3_client.exceptions.NoSuchKey:
                 df_existing = pd.DataFrame()
 
@@ -278,7 +278,9 @@ def publish_sns(fcm_tokens):
         span.set_attribute("sns.topic", topicArn or "")
         if not fcm_tokens:
             return
-        sns_client.publish(TopicArn=topicArn, Message=json.dumps({"fcmTokens": fcm_tokens}))
+        # sns_client.publish(TopicArn=topicArn, Message=json.dumps({"fcmTokens": fcm_tokens}))
+        resp = sns_client.publish(TopicArn=topicArn, Message=json.dumps({"fcmTokens": fcm_tokens}))
+        logging.info("SNS publish done: MessageId=%s", resp.get("MessageId"))
         SNS_PUBLISH_TOTAL.inc()
 
 def receive_messages():

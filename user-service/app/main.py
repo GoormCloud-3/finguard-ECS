@@ -1,5 +1,5 @@
-import whatap
-whatap.agent()  # ← 최우선 초기화
+# import whatap
+# whatap.agent()  # ← 최우선 초기화
 
 from fastapi import FastAPI, Request
 import logging
