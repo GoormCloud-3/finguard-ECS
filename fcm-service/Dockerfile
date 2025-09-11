@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir whatap-python && \
     mkdir -p /whatap 
 
 # 실행 시 환경변수로 whatap.conf 생성
-COPY docker-entrypoint.sh /usr/local/bin/
+COPY ./docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
