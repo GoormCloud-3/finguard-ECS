@@ -272,6 +272,8 @@ def poll_sqs_once() -> int:
             logger.error(f"SQS 수신 오류: {e}")
             FCM_ERRORS.inc()
             return processed
+        
+        logging.info("Queue url: %s", QUEUE_URL)
         logging.info("📨 SQS 메시지 수신 ,,,")
 
         msgs = res.get("Messages", [])
