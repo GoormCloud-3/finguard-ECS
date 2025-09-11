@@ -33,5 +33,5 @@ COPY ./docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
     
-# CMD ["whatap-start-agent","opentelemetry-instrument","--traces_exporter","otlp","--metrics_exporter","none","--service_name","sqs-service","python","app.py"]
-CMD ["opentelemetry-instrument","--traces_exporter","otlp","--metrics_exporter","none","--service_name","sqs-service","python","app.py"]
+CMD ["whatap-start-agent","opentelemetry-instrument","--traces_exporter","otlp","--metrics_exporter","none","--service_name","sqs-service","python","app.py"]
+# CMD ["opentelemetry-instrument","--traces_exporter","otlp","--metrics_exporter","none","--service_name","sqs-service","python","app.py"]

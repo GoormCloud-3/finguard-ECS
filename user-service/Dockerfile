@@ -32,5 +32,5 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # OTel 실행(서비스명은 각 서비스 이미지에서 바꾸세요: account-service/user-service/transaction-service)
-CMD ["opentelemetry-instrument", "--traces_exporter", "otlp", "--metrics_exporter", "none", "--service_name", "user-service", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-# CMD ["whatap-start-agent","opentelemetry-instrument","--traces_exporter","otlp","--metrics_exporter","none","--service_name","user-service","uvicorn","main:app","--host","0.0.0.0","--port","8000"]
+# CMD ["opentelemetry-instrument", "--traces_exporter", "otlp", "--metrics_exporter", "none", "--service_name", "user-service", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["whatap-start-agent","opentelemetry-instrument","--traces_exporter","otlp","--metrics_exporter","none","--service_name","user-service","uvicorn","main:app","--host","0.0.0.0","--port","8000"]
