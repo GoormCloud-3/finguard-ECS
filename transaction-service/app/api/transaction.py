@@ -46,6 +46,7 @@ sqs_client = boto3.client("sqs", region_name=region, config=_boto_cfg)
 ssm_client = boto3.client("ssm", region_name=region, config=_boto_cfg)
 tracer = trace.get_tracer("transaction-service")
 
+
 # ---------------- 공용 유틸 (비-DB) ----------------
 def haversine_distance(coord1, coord2) -> float:
     R = 6371
@@ -61,8 +62,11 @@ def haversine_distance(coord1, coord2) -> float:
     )
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
+
 # SSM → 큐 URL (간단 캐시)
 _QUEUE_URL_CACHE: Optional[str] = None
+
+
 def get_queue_url_sync() -> str:
     global _QUEUE_URL_CACHE
     if _QUEUE_URL_CACHE:
@@ -74,6 +78,7 @@ def get_queue_url_sync() -> str:
     _QUEUE_URL_CACHE = resp["Parameter"]["Value"]
     return _QUEUE_URL_CACHE
 
+
 # ---------------- 스레드풀에서 돌릴 "순수 DB 함수"들 ----------------
 def _check_fraud(conn, counter_account: str) -> bool:
     with conn.cursor() as cur:
@@ -81,6 +86,7 @@ def _check_fraud(conn, counter_account: str) -> bool:
             "SELECT 1 FROM fraud WHERE accountNumber=%s LIMIT 1", (counter_account,)
         )
         return cur.fetchone() is not None
+
 
 def _select_my_account(conn, my_account_number: str):
     with conn.cursor() as cur:
@@ -90,6 +96,7 @@ def _select_my_account(conn, my_account_number: str):
         )
         return cur.fetchone()
 
+
 def _select_counter_account(conn, counter_account_number: str):
     with conn.cursor() as cur:
         cur.execute(
@@ -97,6 +104,7 @@ def _select_counter_account(conn, counter_account_number: str):
             (counter_account_number,),
         )
         return cur.fetchone()
+
 
 def _get_last_tx_location(conn, account_id: str) -> Optional[Tuple[float, float]]:
     with conn.cursor() as cur:
@@ -113,6 +121,7 @@ def _get_last_tx_location(conn, account_id: str) -> Optional[Tuple[float, float]
         row = cur.fetchone()
         return (row["lat"], row["lon"]) if row else None
 
+
 def _get_home_location(conn, user_sub: str) -> Optional[Tuple[float, float]]:
     with conn.cursor() as cur:
         cur.execute(
@@ -122,6 +131,7 @@ def _get_home_location(conn, user_sub: str) -> Optional[Tuple[float, float]]:
         row = cur.fetchone()
         return (row["lat"], row["lon"]) if row else None
 
+
 def _has_repeat_retailer(conn, account_id: str, counter_account: str) -> bool:
     with conn.cursor() as cur:
         cur.execute(
@@ -129,6 +139,7 @@ def _has_repeat_retailer(conn, account_id: str, counter_account: str) -> bool:
             (account_id, counter_account),
         )
         return cur.fetchone() is not None
+
 
 def _apply_transfer(
     conn,
@@ -217,6 +228,7 @@ def _apply_transfer(
             pass
         raise
 
+
 def _load_median_heaps(conn, account_number: str) -> tuple[MinHeap, MaxHeap]:
     with conn.cursor() as cur:
         cur.execute(
@@ -224,9 +236,18 @@ def _load_median_heaps(conn, account_number: str) -> tuple[MinHeap, MaxHeap]:
             (account_number,),
         )
         row = cur.fetchone()
-        min_heap = MinHeap(json.loads(row["minHeap"])) if (row and row["minHeap"]) else MinHeap([])
-        max_heap = MaxHeap(json.loads(row["maxHeap"])) if (row and row["maxHeap"]) else MaxHeap([])
+        min_heap = (
+            MinHeap(json.loads(row["minHeap"]))
+            if (row and row["minHeap"])
+            else MinHeap([])
+        )
+        max_heap = (
+            MaxHeap(json.loads(row["maxHeap"]))
+            if (row and row["maxHeap"])
+            else MaxHeap([])
+        )
         return min_heap, max_heap
+
 
 def _save_median_heaps(conn, account_number: str, min_heap: MinHeap, max_heap: MaxHeap):
     with conn.cursor() as cur:
@@ -239,6 +260,7 @@ def _save_median_heaps(conn, account_number: str, min_heap: MinHeap, max_heap: M
             ),
         )
     conn.commit()
+
 
 # ---------------- 라우트 ----------------
 @router.post("/transaction", response_model=TransactionSuccessResponse, status_code=201)
@@ -265,7 +287,9 @@ async def create_transaction(payload: TransactionRequest, request: Request):
 
             with conn.cursor():  # 커서는 스레드만 접근
                 # 1) 사기 계좌 체크
-                with tracer.start_as_current_span("sql.check_fraud") as span, DB_SECONDS.labels("check_fraud").time():
+                with tracer.start_as_current_span(
+                    "sql.check_fraud"
+                ) as span, DB_SECONDS.labels("check_fraud").time():
                     is_fraud = await anyio.to_thread.run_sync(
                         _check_fraud, conn, payload.counter_account
                     )
@@ -273,11 +297,16 @@ async def create_transaction(payload: TransactionRequest, request: Request):
                     if is_fraud:
                         raise HTTPException(
                             status_code=403,
-                            detail={"error": "FraudulentAccount", "message": "사기 계좌로 송금할 수 없습니다."},
+                            detail={
+                                "error": "FraudulentAccount",
+                                "message": "사기 계좌로 송금할 수 없습니다.",
+                            },
                         )
 
                 # 2) 내 계좌
-                with tracer.start_as_current_span("sql.select_my_account") as span, DB_SECONDS.labels("select_my").time():
+                with tracer.start_as_current_span(
+                    "sql.select_my_account"
+                ) as span, DB_SECONDS.labels("select_my").time():
                     my_account = await anyio.to_thread.run_sync(
                         _select_my_account, conn, payload.my_account
                     )
@@ -285,50 +314,73 @@ async def create_transaction(payload: TransactionRequest, request: Request):
                     if not my_account:
                         raise HTTPException(
                             status_code=404,
-                            detail={"error": "MyAccountNotFound", "message": "내 계좌를 찾을 수 없습니다."},
+                            detail={
+                                "error": "MyAccountNotFound",
+                                "message": "내 계좌를 찾을 수 없습니다.",
+                            },
                         )
                     if my_account["balance"] < float(payload.money):
                         raise HTTPException(
                             status_code=400,
-                            detail={"error": "InsufficientBalance", "message": "잔고가 부족합니다."},
+                            detail={
+                                "error": "InsufficientBalance",
+                                "message": "잔고가 부족합니다.",
+                            },
                         )
 
                 # 3) 상대 계좌
-                with tracer.start_as_current_span("sql.select_counter_account") as span, DB_SECONDS.labels("select_counter").time():
+                with tracer.start_as_current_span(
+                    "sql.select_counter_account"
+                ) as span, DB_SECONDS.labels("select_counter").time():
                     counter_account = await anyio.to_thread.run_sync(
                         _select_counter_account, conn, payload.counter_account
                     )
                     if not counter_account:
                         raise HTTPException(
                             status_code=404,
-                            detail={"error": "CounterAccountNotFound", "message": "해당 계좌를 찾을 수 없습니다."},
+                            detail={
+                                "error": "CounterAccountNotFound",
+                                "message": "해당 계좌를 찾을 수 없습니다.",
+                            },
                         )
 
                 # 4) 마지막 거래 위치
-                with tracer.start_as_current_span("sql.last_tx_location"), DB_SECONDS.labels("last_tx_loc").time():
+                with tracer.start_as_current_span(
+                    "sql.last_tx_location"
+                ), DB_SECONDS.labels("last_tx_loc").time():
                     gps_last = await anyio.to_thread.run_sync(
                         _get_last_tx_location, conn, my_account["account_id"]
                     )
 
                 # 5) 홈 좌표
-                with tracer.start_as_current_span("sql.get_home_location"), DB_SECONDS.labels("home_loc").time():
+                with tracer.start_as_current_span(
+                    "sql.get_home_location"
+                ), DB_SECONDS.labels("home_loc").time():
                     gps_home = await anyio.to_thread.run_sync(
                         _get_home_location, conn, payload.userSub
                     )
                     if not gps_home:
                         raise HTTPException(
                             status_code=404,
-                            detail={"error": "UserNotFound", "message": "유저 정보를 찾을 수 없습니다."},
+                            detail={
+                                "error": "UserNotFound",
+                                "message": "유저 정보를 찾을 수 없습니다.",
+                            },
                         )
 
                 # 6) 특징 계산
                 with tracer.start_as_current_span("biz.compute_features") as span:
                     distance_from_home = haversine_distance(gps_home, payload.location)
                     distance_from_last = (
-                        haversine_distance(gps_last, payload.location) if gps_last else 0.0
+                        haversine_distance(gps_last, payload.location)
+                        if gps_last
+                        else 0.0
                     )
                     repeat_retailer = await anyio.to_thread.run_sync(
-                        _has_repeat_retailer, conn, my_account["account_id"], payload.counter_account
+                        _has_repeat_retailer,
+                        conn,
+                        my_account["account_id"],
+                        payload.counter_account,
                     )
                     repeat_retailer = 1.0 if repeat_retailer else 0.0
                     used_chip = int(payload.used_card) if payload.used_card else 0
@@ -339,7 +391,9 @@ async def create_transaction(payload: TransactionRequest, request: Request):
                     span.set_attribute("feature.used_chip", used_chip)
 
                 # 7) 송금 적용 (원자성)
-                with tracer.start_as_current_span("sql.apply_transfer"), DB_SECONDS.labels("apply_transfer").time():
+                with tracer.start_as_current_span(
+                    "sql.apply_transfer"
+                ), DB_SECONDS.labels("apply_transfer").time():
                     try:
                         debit_id, credit_id = await anyio.to_thread.run_sync(
                             _apply_transfer,
@@ -354,7 +408,10 @@ async def create_transaction(payload: TransactionRequest, request: Request):
                         if str(ve) == "INSUFFICIENT_BALANCE":
                             raise HTTPException(
                                 status_code=400,
-                                detail={"error": "InsufficientBalance", "message": "잔고가 부족합니다."},
+                                detail={
+                                    "error": "InsufficientBalance",
+                                    "message": "잔고가 부족합니다.",
+                                },
                             )
                         raise
 
@@ -364,14 +421,20 @@ async def create_transaction(payload: TransactionRequest, request: Request):
                         _load_median_heaps, conn, payload.my_account
                     )
 
-                    if max_heap.size() and min_heap.size() and max_heap.size() == min_heap.size():
+                    if (
+                        max_heap.size()
+                        and min_heap.size()
+                        and max_heap.size() == min_heap.size()
+                    ):
                         median_before = (max_heap.peek() + min_heap.peek()) / 2
                     elif max_heap.size():
                         median_before = max_heap.peek()
                     else:
                         median_before = 0.0
 
-                    ratio_to_median = float(payload.money) / median_before if median_before else 1.0
+                    ratio_to_median = (
+                        float(payload.money) / median_before if median_before else 1.0
+                    )
 
                     if max_heap.size() == 0 or float(payload.money) < max_heap.peek():
                         max_heap.push(float(payload.money))
@@ -396,11 +459,15 @@ async def create_transaction(payload: TransactionRequest, request: Request):
                         used_chip,
                     ]
                     message = {"userSub": payload.userSub, "features": features}
-                    dedup_id = f"{int(datetime.utcnow().timestamp() * 1000)}-{uuid.uuid4()}"
+                    dedup_id = (
+                        f"{int(datetime.utcnow().timestamp() * 1000)}-{uuid.uuid4()}"
+                    )
 
                     # OTel 컨텍스트를 MessageAttributes로 수동 주입 (X-Ray / W3C 둘 다)
                     carrier: dict[str, str] = {}
-                    inject(carrier)  # 현재 컨텍스트 → {"traceparent": "...", "baggage": "..."} 등
+                    inject(
+                        carrier
+                    )  # 현재 컨텍스트 → {"traceparent": "...", "baggage": "..."} 등
                     msg_attrs = {
                         k: {"DataType": "String", "StringValue": v}
                         for k, v in carrier.items()
@@ -409,15 +476,18 @@ async def create_transaction(payload: TransactionRequest, request: Request):
                     if "traceparent" in carrier:
                         msg_attrs.setdefault(
                             "X-Amzn-Trace-Id",
-                            {"DataType": "String", "StringValue": carrier["traceparent"]},
+                            {
+                                "DataType": "String",
+                                "StringValue": carrier["traceparent"],
+                            },
                         )
 
                     with EXT_SECONDS.labels("sqs").time():
                         sqs_client.send_message(
                             QueueUrl=queue_url,
                             MessageBody=json.dumps(message),
-                            MessageGroupId="trade-group",          # FIFO일 때
-                            MessageDeduplicationId=dedup_id,       # FIFO일 때
+                            MessageGroupId="trade-group",  # FIFO일 때
+                            MessageDeduplicationId=dedup_id,  # FIFO일 때
                             MessageAttributes=msg_attrs,
                         )
 

@@ -25,8 +25,9 @@ tracer = trace.get_tracer("user-service")
 API_REQUESTS = Counter(
     "user_api_requests_total",
     "user API requests",
-    ["path", "result"]  # result: success|bad_request|conflict|unavailable|error
+    ["path", "result"],  # result: success|bad_request|conflict|unavailable|error
 )
+
 
 # ----- 스레드풀에서 실행될 순수 DB 함수 -----
 def _insert_user(conn, user_sub: str, point_wkt: str) -> None:
@@ -36,6 +37,7 @@ def _insert_user(conn, user_sub: str, point_wkt: str) -> None:
             (user_sub, point_wkt),
         )
     conn.commit()
+
 
 # ---------------------------- 라우트 ----------------------------
 @router.post("/users", response_model=UserResponse)
@@ -57,7 +59,10 @@ async def create_user(payload: UserRequest):
             API_REQUESTS.labels(path="/users", result="bad_request").inc()
             return JSONResponse(
                 status_code=400,
-                content={"error": "BadRequest", "message": "userSub 또는 gps_location 누락"},
+                content={
+                    "error": "BadRequest",
+                    "message": "userSub 또는 gps_location 누락",
+                },
             )
         if not isinstance(gps_location, (list, tuple)) or len(gps_location) != 2:
             API_REQUESTS.labels(path="/users", result="bad_request").inc()

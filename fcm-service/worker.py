@@ -21,18 +21,25 @@ from prometheus_client import Counter, Histogram
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 # Prometheus metrics (전역)
-FCM_PROCESSED = Counter("fcm_processed_total", "FCM messages processed", ["mode"])  # mode: single|topic|condition
-FCM_ERRORS    = Counter("fcm_errors_total", "Errors while processing")
-SQS_POLL_SIZE = Histogram("sqs_poll_batch_size", "Messages received per poll", buckets=(0, 1, 2, 5, 10))
-FCM_SEND_SEC  = Histogram("fcm_send_seconds", "Firebase send latency (s)")
+FCM_PROCESSED = Counter(
+    "fcm_processed_total", "FCM messages processed", ["mode"]
+)  # mode: single|topic|condition
+FCM_ERRORS = Counter("fcm_errors_total", "Errors while processing")
+SQS_POLL_SIZE = Histogram(
+    "sqs_poll_batch_size", "Messages received per poll", buckets=(0, 1, 2, 5, 10)
+)
+FCM_SEND_SEC = Histogram("fcm_send_seconds", "Firebase send latency (s)")
 
 # ---------- Health ----------
 HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8000"))
 
+
 class _Health(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
-            self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
         elif self.path == "/metrics":
             output = generate_latest()
             self.send_response(200)
@@ -41,11 +48,14 @@ class _Health(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(output)
         else:
-            self.send_response(404); self.end_headers()
+            self.send_response(404)
+            self.end_headers()
+
 
 def _start_health_server():
     srv = HTTPServer(("0.0.0.0", HEALTH_PORT), _Health)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+
 
 # ---------- Logging ----------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -58,10 +68,14 @@ logger = logging.getLogger("fcm-worker")
 
 # ---------- Graceful shutdown ----------
 _SHOULD_STOP = False
+
+
 def _handle_sigterm(signum, frame):
     global _SHOULD_STOP
     _SHOULD_STOP = True
     logger.info("🛑 SIGTERM 수신: 안전 종료 준비")
+
+
 signal.signal(signal.SIGTERM, _handle_sigterm)
 signal.signal(signal.SIGINT, _handle_sigterm)
 
@@ -86,10 +100,14 @@ from opentelemetry.propagate import extract
 from opentelemetry.context import attach, detach
 from opentelemetry.propagators.textmap import Getter
 
-tracer = trace.get_tracer("fcm-service")  # service.name은 OTEL_RESOURCE_ATTRIBUTES로도 세팅됨
+tracer = trace.get_tracer(
+    "fcm-service"
+)  # service.name은 OTEL_RESOURCE_ATTRIBUTES로도 세팅됨
+
 
 class _SQSAttrGetter(Getter):
     """SNS→SQS MessageAttributes에서 전파 헤더를 꺼내기 위한 Getter"""
+
     def get(self, carrier, key):
         attrs = (carrier or {}).get("MessageAttributes") or {}
         for k in (key, key.title(), key.upper(), "X-Amzn-Trace-Id", "traceparent"):
@@ -97,11 +115,14 @@ class _SQSAttrGetter(Getter):
             if isinstance(v, dict) and "StringValue" in v:
                 return [v["StringValue"]]
         return []
+
     def keys(self, carrier):
         attrs = (carrier or {}).get("MessageAttributes") or {}
         return list(attrs.keys())
 
+
 _SQS_GETTER = _SQSAttrGetter()
+
 
 def _discover_task_ip_from_metadata() -> str | None:
     """ECS 메타데이터(v4)에서 태스크 ENI IP를 찾아서 반환"""
@@ -122,6 +143,7 @@ def _discover_task_ip_from_metadata() -> str | None:
         logger.warning(f"ECS 메타데이터에서 태스크 IP 탐지 실패: {e}")
     return None
 
+
 def _init_tracing():
     """
     OTLP gRPC로 ADOT Collector에 전송되도록 SDK 초기화.
@@ -136,28 +158,35 @@ def _init_tracing():
             os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint  # 추후 참조 위해 세팅
             logger.info(f"🔎 OTLP endpoint 자동 설정: {endpoint}")
     if not endpoint:
-        logger.warning("⚠️ OTEL_EXPORTER_OTLP_ENDPOINT 미설정, 트레이스 내보내기 비활성화")
+        logger.warning(
+            "⚠️ OTEL_EXPORTER_OTLP_ENDPOINT 미설정, 트레이스 내보내기 비활성화"
+        )
         return
 
     try:
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+            OTLPSpanExporter,
+        )
 
         # 가능한 경우 X-Ray ID 생성기 사용 (없어도 OK)
         id_generator = None
         try:
             from opentelemetry.sdk.extension.aws.trace import AwsXRayIdGenerator
+
             id_generator = AwsXRayIdGenerator()
             logger.info("🧩 AwsXRayIdGenerator 활성화")
         except Exception:
             logger.info("🧩 AwsXRayIdGenerator 미사용(패키지 없음). 기본 ID 사용")
 
-        resource = Resource.create({
-            "service.name": os.getenv("OTEL_SERVICE_NAME", "fcm-service"),
-            "service.namespace": "finguard",
-        })
+        resource = Resource.create(
+            {
+                "service.name": os.getenv("OTEL_SERVICE_NAME", "fcm-service"),
+                "service.namespace": "finguard",
+            }
+        )
 
         provider = TracerProvider(resource=resource, id_generator=id_generator)
         exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
@@ -174,6 +203,7 @@ def _init_tracing():
     except Exception as e:
         logger.error(f"❌ OTel 트레이싱 초기화 실패: {e}")
 
+
 # ---------- Firebase credentials ----------
 def _init_firebase_admin():
     """
@@ -182,7 +212,7 @@ def _init_firebase_admin():
     2) FIREBASE_SA_PARAM (SSM 파라미터 이름)
     3) FIREBASE_CRED_FILE (기본: service-account-key.json)
     """
-    sa_env   = os.getenv("FIREBASE_SA_JSON")
+    sa_env = os.getenv("FIREBASE_SA_JSON")
     sa_param = os.getenv("FIREBASE_SA_PARAM")  # ex) /prod/firebase-service-account-json
     file_path = os.getenv("FIREBASE_CRED_FILE", "service-account-key.json")
 
@@ -212,7 +242,10 @@ def _init_firebase_admin():
             logger.info("✅ Firebase initialized from SSM param")
             return
 
-        logger.warning("⚠️ FIREBASE_SA_JSON & FIREBASE_SA_PARAM both missing; falling back to file: %s", file_path)
+        logger.warning(
+            "⚠️ FIREBASE_SA_JSON & FIREBASE_SA_PARAM both missing; falling back to file: %s",
+            file_path,
+        )
         cred = credentials.Certificate(file_path)
         initialize_app(cred)
         logger.info("✅ Firebase initialized from file")
@@ -220,6 +253,7 @@ def _init_firebase_admin():
     except Exception as e:
         logger.error("Firebase 초기화 실패: %s", e)
         raise
+
 
 # ---------- helpers ----------
 def mask_token(token: str | None) -> str | None:
@@ -229,17 +263,23 @@ def mask_token(token: str | None) -> str | None:
         return "***"
     return f"{token[:4]}***{token[-4:]}"
 
+
 def parse_payload(body_str: str) -> dict:
     try:
         outer = json.loads(body_str)
         if isinstance(outer, dict) and "Message" in outer:
-            inner = json.loads(outer["Message"]) if isinstance(outer["Message"], str) else outer["Message"]
+            inner = (
+                json.loads(outer["Message"])
+                if isinstance(outer["Message"], str)
+                else outer["Message"]
+            )
             return inner or {}
         return outer or {}
     except Exception as e:
         logger.error(f"Payload 파싱 실패: {e}")
         FCM_ERRORS.inc()
         return {}
+
 
 def build_fcm_parts(payload: dict) -> dict:
     data = None
@@ -248,10 +288,13 @@ def build_fcm_parts(payload: dict) -> dict:
     return {
         "notification": messaging.Notification(
             title=payload.get("title", "알림"),
-            body=payload.get("body", f"환영합니다, {payload.get('userId', '사용자')}님!")
+            body=payload.get(
+                "body", f"환영합니다, {payload.get('userId', '사용자')}님!"
+            ),
         ),
-        "data": data
+        "data": data,
     }
+
 
 # ---------- main poll loop helpers ----------
 def poll_sqs_once() -> int:
@@ -272,7 +315,7 @@ def poll_sqs_once() -> int:
             logger.error(f"SQS 수신 오류: {e}")
             FCM_ERRORS.inc()
             return processed
-        
+
         logging.info("Queue url: %s", QUEUE_URL)
         logging.info("📨 SQS 메시지 수신 ,,,")
 
@@ -295,15 +338,24 @@ def poll_sqs_once() -> int:
                         # ★ 우리가 실제로 보내는 페이로드: {"fcmTokens": [...]}
                         tokens = payload.get("fcmTokens")
                         if not isinstance(tokens, list):
-                            logger.warning("⚠️ payload에 fcmTokens가 없거나 리스트가 아님. keys=%s", list(payload.keys()))
+                            logger.warning(
+                                "⚠️ payload에 fcmTokens가 없거나 리스트가 아님. keys=%s",
+                                list(payload.keys()),
+                            )
                             FCM_ERRORS.inc()
                             # 삭제하지 않음 → 재시도/조사 가능
                             continue
 
                         # 문자열 토큰만 골라 정제
-                        valid_tokens = [t.strip() for t in tokens if isinstance(t, str) and t.strip()]
+                        valid_tokens = [
+                            t.strip()
+                            for t in tokens
+                            if isinstance(t, str) and t.strip()
+                        ]
                         if not valid_tokens:
-                            logger.warning("⚠️ 유효한 fcmTokens가 없음 (원본 개수=%d)", len(tokens))
+                            logger.warning(
+                                "⚠️ 유효한 fcmTokens가 없음 (원본 개수=%d)", len(tokens)
+                            )
                             FCM_ERRORS.inc()
                             continue
 
@@ -313,28 +365,44 @@ def poll_sqs_once() -> int:
                         sent, failed = 0, 0
                         for tk in valid_tokens:
                             try:
-                                with tracer.start_as_current_span("fcm.send_single") as sspan, FCM_SEND_SEC.time():
+                                with tracer.start_as_current_span(
+                                    "fcm.send_single"
+                                ) as sspan, FCM_SEND_SEC.time():
                                     sspan.set_attribute("fcm.mode", "single")
-                                    sspan.set_attribute("fcm.token_masked", mask_token(tk) or "")
-                                    messaging.send(messaging.Message(**msg_kwargs, token=tk))
+                                    sspan.set_attribute(
+                                        "fcm.token_masked", mask_token(tk) or ""
+                                    )
+                                    messaging.send(
+                                        messaging.Message(**msg_kwargs, token=tk)
+                                    )
                                 sent += 1
                             except Exception as e:
                                 failed += 1
-                                logger.error("❌ FCM 전송 실패(token=%s): %s", mask_token(tk), e)
+                                logger.error(
+                                    "❌ FCM 전송 실패(token=%s): %s", mask_token(tk), e
+                                )
                                 FCM_ERRORS.inc()
 
                         if sent:
                             FCM_PROCESSED.labels(mode="single").inc(sent)
-                        logger.info("✅ FCM 전송 완료: sent=%d, failed=%d", sent, failed)
+                        logger.info(
+                            "✅ FCM 전송 완료: sent=%d, failed=%d", sent, failed
+                        )
 
                         # 성공/실패와 무관하게 일단 소비하고 상위 재발행 전략은 퍼블리셔에서 처리
                         with tracer.start_as_current_span("sqs.delete") as dspan:
                             dspan.set_attribute("sqs.queue", QUEUE_URL.split("/")[-1])
-                            sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=msg["ReceiptHandle"])
+                            sqs.delete_message(
+                                QueueUrl=QUEUE_URL, ReceiptHandle=msg["ReceiptHandle"]
+                            )
                         processed += 1
 
                     except Exception as e:
-                        logger.error("❌ 메시지 처리 오류 (msgId=%s): %s", msg.get("MessageId"), e)
+                        logger.error(
+                            "❌ 메시지 처리 오류 (msgId=%s): %s",
+                            msg.get("MessageId"),
+                            e,
+                        )
                         FCM_ERRORS.inc()
                         span.record_exception(e)
                         span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -347,12 +415,13 @@ def poll_sqs_once() -> int:
 
 # ---------- run ----------
 BACKOFF_BASE = int(os.getenv("BACKOFF_BASE", "2"))
-BACKOFF_MAX  = int(os.getenv("BACKOFF_MAX", "30"))
-IDLE_RESET   = int(os.getenv("IDLE_RESET", "5"))
+BACKOFF_MAX = int(os.getenv("BACKOFF_MAX", "30"))
+IDLE_RESET = int(os.getenv("IDLE_RESET", "5"))
+
 
 def run_forever():
     logger.info("🚀 FCM 워커 시작 (상시 폴링 모드)")
-    _init_tracing()         # ★ 트레이싱 먼저
+    _init_tracing()  # ★ 트레이싱 먼저
     logging.info("🔐 Firebase Admin SDK 초기화 시도 ...")
     _init_firebase_admin()
     logging.info("✅ Firebase Admin SDK 초기화 완료")
@@ -374,6 +443,7 @@ def run_forever():
             logging.info("✅ 메시지 처리 완료, 즉시 다음 폴링 ...")
             empty = 0
     logger.info("🔚 안전 종료 완료")
+
 
 if __name__ == "__main__":
     run_forever()

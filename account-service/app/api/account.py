@@ -7,6 +7,9 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 import anyio
 
+# 변경
+from datetime import datetime, date, time as dtime
+
 from models.schema import (
     CreateAccountRequest,
     AccountResponse,
@@ -23,11 +26,38 @@ from db.dynamo import store_fcm_token
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
+
+# Time for transaction
+def _time_hhmmss(val):
+    """HH:MM:SS로 반환 (time/datetime/str 모두 허용)"""
+    if not val:
+        return None
+    if isinstance(val, (datetime, dtime)):
+        return val.strftime("%H:%M:%S")
+    if isinstance(val, str):
+        s = val.strip()
+        # ISO 형식 우선 시도
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).strftime("%H:%M:%S")
+        except ValueError:
+            pass
+        # 'HH:MM' 또는 'HH:MM:SS' 직접 파싱
+        try:
+            h, m, *rest = s.split(":")
+            sec = int(rest[0]) if rest else 0
+            return f"{int(h):02d}:{int(m):02d}:{sec:02d}"
+        except Exception:
+            return None
+    return None
+
+
 # ── Prometheus
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 router = APIRouter()
-tracer = trace.get_tracer("account-service")  # service.name은 OTEL_RESOURCE_ATTRIBUTES로도 들어감
+tracer = trace.get_tracer(
+    "account-service"
+)  # service.name은 OTEL_RESOURCE_ATTRIBUTES로도 들어감
 
 # ─────────────── Prometheus metrics ───────────────
 API_REQS = Counter(
@@ -37,9 +67,13 @@ API_LATENCY = Histogram(
     "account_api_latency_seconds", "API latency seconds", ["route", "method"]
 )
 
+
 def _observe(route: str, method: str, status: str, start_ts: float):
     API_REQS.labels(route=route, method=method, status=status).inc()
-    API_LATENCY.labels(route=route, method=method).observe(time.perf_counter() - start_ts)
+    API_LATENCY.labels(route=route, method=method).observe(
+        time.perf_counter() - start_ts
+    )
+
 
 # ─────────────── helpers ───────────────
 def generate_account_number() -> str:
@@ -48,17 +82,20 @@ def generate_account_number() -> str:
     part3 = str(random.randint(10000, 99999))
     return f"{part1}-{part2}-{part3}"
 
+
 def _check_unique_account(conn, acc_num: str) -> bool:
     query = "SELECT 1 FROM accounts WHERE accountNumber = %s"
     with conn.cursor() as cursor:
         cursor.execute(query, (acc_num,))
         return cursor.fetchone() is None
 
+
 def _generate_unique_account_number(conn) -> str:
     while True:
         acc_num = generate_account_number()
         if _check_unique_account(conn, acc_num):
             return acc_num
+
 
 def _insert_account(conn, params):
     with conn.cursor() as cursor:
@@ -72,6 +109,7 @@ def _insert_account(conn, params):
         )
         conn.commit()
 
+
 def _select_account(conn, account_id: str):
     with conn.cursor() as cursor:
         cursor.execute(
@@ -82,6 +120,7 @@ def _select_account(conn, account_id: str):
             (account_id,),
         )
         return cursor.fetchone()
+
 
 def _select_transactions(conn, account_id: str):
     with conn.cursor() as cursor:
@@ -95,6 +134,7 @@ def _select_transactions(conn, account_id: str):
         )
         return cursor.fetchall()
 
+
 def _select_accounts_by_user(conn, user_sub: str):
     with conn.cursor() as cursor:
         cursor.execute(
@@ -106,15 +146,18 @@ def _select_accounts_by_user(conn, user_sub: str):
         )
         return cursor.fetchall()
 
+
 # ─────────────── metrics & health ───────────────
 @router.get("/metrics")
 def metrics():
     # Prometheus receiver(ADOT)가 스크레이프하는 엔드포인트
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
+
 @router.get("/health")
 def health():
     return {"status": "ok"}
+
 
 # ─────────────── routes ───────────────
 @router.post("/accounts/create", response_model=AccountCreateResult)
@@ -127,7 +170,9 @@ async def create_account(payload: CreateAccountRequest):
         with tracer.start_as_current_span("biz.generate_unique_number") as span:
             try:
                 logging.info("Generating unique account number ...")
-                account_number = await anyio.to_thread.run_sync(_generate_unique_account_number, conn)
+                account_number = await anyio.to_thread.run_sync(
+                    _generate_unique_account_number, conn
+                )
                 span.set_attribute("app.account.number", account_number)
             except Exception as e:
                 logging.exception("🚨Error generating unique account number")
@@ -145,7 +190,13 @@ async def create_account(payload: CreateAccountRequest):
                 await anyio.to_thread.run_sync(
                     _insert_account,
                     conn,
-                    (account_id, payload.userSub, payload.accountName, account_number, payload.bankName),
+                    (
+                        account_id,
+                        payload.userSub,
+                        payload.accountName,
+                        account_number,
+                        payload.bankName,
+                    ),
                 )
             except Exception as e:
                 span.record_exception(e)
@@ -171,6 +222,7 @@ async def create_account(payload: CreateAccountRequest):
         if conn:
             conn.close()
 
+
 @router.get("/accounts/{account_id}", response_model=AccountDetailResponse)
 async def get_account(account_id: str):
     route, method = "/accounts/{account_id}", "GET"
@@ -181,7 +233,9 @@ async def get_account(account_id: str):
         with tracer.start_as_current_span("sql.select_account") as span:
             logging.info("Fetching account details from database ...")
             span.set_attribute("db.system", "mysql")
-            span.set_attribute("db.statement", "SELECT ... FROM accounts WHERE account_id = ?")
+            span.set_attribute(
+                "db.statement", "SELECT ... FROM accounts WHERE account_id = ?"
+            )
             span.set_attribute("db.param.account_id", account_id)
             try:
                 acc = await anyio.to_thread.run_sync(_select_account, conn, account_id)
@@ -199,9 +253,13 @@ async def get_account(account_id: str):
         with tracer.start_as_current_span("sql.select_transactions") as span:
             logging.info("Fetching transactions from database ...")
             span.set_attribute("db.system", "mysql")
-            span.set_attribute("db.statement", "SELECT ... FROM transactions WHERE account_id = ?")
+            span.set_attribute(
+                "db.statement", "SELECT ... FROM transactions WHERE account_id = ?"
+            )
             try:
-                txs = await anyio.to_thread.run_sync(_select_transactions, conn, account_id)
+                txs = await anyio.to_thread.run_sync(
+                    _select_transactions, conn, account_id
+                )
             except Exception as e:
                 logging.exception("🚨Error fetching transactions")
                 span.record_exception(e)
@@ -211,11 +269,11 @@ async def get_account(account_id: str):
         transactions = [
             TransactionItem(
                 id=row["transaction_id"],
-                date=row["date"].isoformat() if row["date"] else None,
-                time=row["time"].strftime("%H:%M") if row["time"] else None,
-                description=row["description"],
-                amount=row["amount"],
-                type="credit" if row["type"] == "입금" else "debit",
+                date=(row.get("date") or "").strip() or None,  
+                time=(row.get("time") or "").strip() or None,  
+                description=row.get("description"),
+                amount=row.get("amount"),
+                type="credit" if row.get("type") == "입금" else "debit",
             )
             for row in txs
         ]
@@ -241,6 +299,7 @@ async def get_account(account_id: str):
         if conn:
             conn.close()
 
+
 @router.post("/accounts/financial", response_model=GetAccountListResponse)
 async def get_account_list(payload: GetAccountListRequest):
     route, method = "/accounts/financial", "POST"
@@ -262,9 +321,13 @@ async def get_account_list(payload: GetAccountListRequest):
         with tracer.start_as_current_span("sql.select_accounts_by_userSub") as span:
             logging.info("Fetching accounts from database ...")
             span.set_attribute("db.system", "mysql")
-            span.set_attribute("db.statement", "SELECT ... FROM accounts WHERE userSub = ?")
+            span.set_attribute(
+                "db.statement", "SELECT ... FROM accounts WHERE userSub = ?"
+            )
             try:
-                accounts = await anyio.to_thread.run_sync(_select_accounts_by_user, conn, payload.sub)
+                accounts = await anyio.to_thread.run_sync(
+                    _select_accounts_by_user, conn, payload.sub
+                )
             except Exception as e:
                 logging.exception("🚨Error fetching accounts")
                 span.record_exception(e)
@@ -289,7 +352,9 @@ async def get_account_list(payload: GetAccountListRequest):
     except Exception as e:
         logging.exception("🚨getAccountList failed")
         _observe(route, method, "error", t0)
-        raise HTTPException(status_code=400, detail="get_account_list ERROR : " + str(e))
+        raise HTTPException(
+            status_code=400, detail="get_account_list ERROR : " + str(e)
+        )
     finally:
         if conn:
             conn.close()

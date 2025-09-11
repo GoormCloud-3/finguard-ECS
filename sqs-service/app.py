@@ -28,7 +28,8 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 # (있으면 사용) AWS X-Ray 전용 ID/전파자
 try:
     from opentelemetry.sdk.extension.aws.trace import AwsXRayIdGenerator  # type: ignore
-    from opentelemetry.propagators.aws import AwsXRayPropagator           # type: ignore
+    from opentelemetry.propagators.aws import AwsXRayPropagator  # type: ignore
+
     _HAS_XRAY_HELPERS = True
 except Exception:
     _HAS_XRAY_HELPERS = False
@@ -46,12 +47,14 @@ _boto_cfg = Config(
     read_timeout=65,
 )
 
-ssm_client = boto3.client("ssm",               region_name=region, config=_boto_cfg)
-ddb_client = boto3.client("dynamodb",          region_name=region, config=_boto_cfg)
-sagemaker_client = boto3.client("sagemaker-runtime", region_name=region, config=_boto_cfg)
-sns_client = boto3.client("sns",               region_name=region, config=_boto_cfg)
-sqs_client = boto3.client("sqs",               region_name=region, config=_boto_cfg)
-s3_client  = boto3.client("s3",                region_name=region, config=_boto_cfg)
+ssm_client = boto3.client("ssm", region_name=region, config=_boto_cfg)
+ddb_client = boto3.client("dynamodb", region_name=region, config=_boto_cfg)
+sagemaker_client = boto3.client(
+    "sagemaker-runtime", region_name=region, config=_boto_cfg
+)
+sns_client = boto3.client("sns", region_name=region, config=_boto_cfg)
+sqs_client = boto3.client("sqs", region_name=region, config=_boto_cfg)
+s3_client = boto3.client("s3", region_name=region, config=_boto_cfg)
 
 sageMakerEndpoint = None
 topicArn = None
@@ -62,24 +65,35 @@ s3_key = None
 initialized = False
 
 # ───────────────────────── Prometheus Metrics ─────────────────────────
-SQS_POLL_SIZE = Histogram("sqs_poll_batch_size", "Messages received per poll", buckets=(0, 1, 2, 5, 10))
+SQS_POLL_SIZE = Histogram(
+    "sqs_poll_batch_size", "Messages received per poll", buckets=(0, 1, 2, 5, 10)
+)
 SQS_ERRORS_TOTAL = Counter("sqs_errors_total", "Unhandled errors")
-MSG_PROCESSED_TOTAL = Counter("sqs_messages_processed_total", "Messages processed", ["result"])  # success|skipped|error
-SM_INVOKE_SECONDS = Histogram("sagemaker_invoke_seconds", "SageMaker invoke latency (s)")
+MSG_PROCESSED_TOTAL = Counter(
+    "sqs_messages_processed_total", "Messages processed", ["result"]
+)  # success|skipped|error
+SM_INVOKE_SECONDS = Histogram(
+    "sagemaker_invoke_seconds", "SageMaker invoke latency (s)"
+)
 S3_APPEND_SECONDS = Histogram("s3_append_seconds", "S3 append latency (s)")
 SNS_PUBLISH_TOTAL = Counter("sns_publish_total", "SNS publishes (alerts)")
 
 # ───────────────────────── 종료 신호 ─────────────────────────
 RUNNING = True
+
+
 def _handle_sigterm(signum, frame):
     global RUNNING
     logging.info("🛑 SIGTERM received, shutting down gracefully...")
     RUNNING = False
+
+
 signal.signal(signal.SIGTERM, _handle_sigterm)
-signal.signal(signal.SIGINT,  _handle_sigterm)
+signal.signal(signal.SIGINT, _handle_sigterm)
 
 # ───────────────────────── OTel Tracer (init 전 임시) ─────────────────────────
 tracer = trace.get_tracer("bootstrap")
+
 
 def _init_tracing():
     """
@@ -92,13 +106,15 @@ def _init_tracing():
 
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
     svc_name = "sqs-service"
-    svc_ns   = os.getenv("SERVICE_NAMESPACE", "finguard")
+    svc_ns = os.getenv("SERVICE_NAMESPACE", "finguard")
 
     # 리소스 구성 (env의 OTEL_RESOURCE_ATTRIBUTES와 merge됨)
-    resource = Resource.create({
-        "service.name": svc_name,
-        "service.namespace": svc_ns,
-    })
+    resource = Resource.create(
+        {
+            "service.name": svc_name,
+            "service.namespace": svc_ns,
+        }
+    )
 
     # X-Ray ID 생성기(가능하면) 사용
     provider_kwargs = {"resource": resource}
@@ -115,15 +131,21 @@ def _init_tracing():
         set_global_textmap(AwsXRayPropagator())
 
     tracer = trace.get_tracer(svc_name)
-    logging.info(f"✅ OTel tracing initialized (endpoint={endpoint}, xray_helpers={_HAS_XRAY_HELPERS})")
+    logging.info(
+        f"✅ OTel tracing initialized (endpoint={endpoint}, xray_helpers={_HAS_XRAY_HELPERS})"
+    )
+
 
 # ─────────────────────── 헬스/메트릭 서버 ───────────────────────
 HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8000"))
 
+
 class _Health(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
-            self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
         elif self.path == "/metrics":
             output = generate_latest()
             self.send_response(200)
@@ -132,11 +154,14 @@ class _Health(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(output)
         else:
-            self.send_response(404); self.end_headers()
+            self.send_response(404)
+            self.end_headers()
+
 
 def _start_health_server():
     srv = HTTPServer(("0.0.0.0", HEALTH_PORT), _Health)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+
 
 # ─────────────────────── 컨텍스트 추출 Getter ───────────────────────
 class _AttrGetter(Getter):
@@ -150,8 +175,10 @@ class _AttrGetter(Getter):
                     return []
                 return [v] if isinstance(v, str) else [str(v)]
         return []
+
     def keys(self, carrier):
         return list(carrier.keys()) if carrier else []
+
 
 def _extract_ctx_from_sqs(msg: dict):
     carrier = {}
@@ -183,6 +210,7 @@ def _extract_ctx_from_sqs(msg: dict):
 
     return extract(norm, getter=_AttrGetter())
 
+
 # ─────────────────────── 헬퍼 ───────────────────────
 def get_param(name, with_decryption=False):
     with tracer.start_as_current_span("ssm.get_parameter") as span:
@@ -191,6 +219,7 @@ def get_param(name, with_decryption=False):
         resp = ssm_client.get_parameter(Name=name, WithDecryption=with_decryption)
         return resp["Parameter"]["Value"]
 
+
 def init():
     logging.info("🔧 Initializing SQS worker...")
     global sageMakerEndpoint, topicArn, tableName, queue_url, s3_bucket, s3_key, initialized
@@ -198,12 +227,14 @@ def init():
         return
     try:
         with tracer.start_as_current_span("bootstrap.load_params"):
-            sageMakerEndpoint = get_param("/finguard/dev/finance/fraud_sage_maker_endpoint_name")
-            topicArn          = get_param("/finguard/dev/finance/alert_sns_topic")
-            tableName         = get_param("/finguard/dev/finance/notification_table_name")
-            queue_url         = get_param("/finguard/dev/finance/trade_queue_host")
-            s3_bucket         = get_param("/finguard/dev/finance/model_s3_bucket")
-            s3_key            = get_param("/finguard/dev/finance/model_s3_key")
+            sageMakerEndpoint = get_param(
+                "/finguard/dev/finance/fraud_sage_maker_endpoint_name"
+            )
+            topicArn = get_param("/finguard/dev/finance/alert_sns_topic")
+            tableName = get_param("/finguard/dev/finance/notification_table_name")
+            queue_url = get_param("/finguard/dev/finance/trade_queue_host")
+            s3_bucket = get_param("/finguard/dev/finance/model_s3_bucket")
+            s3_key = get_param("/finguard/dev/finance/model_s3_key")
 
             if not all([sageMakerEndpoint, topicArn, tableName, queue_url]):
                 raise ValueError("One or more SSM parameters are empty.")
@@ -211,11 +242,19 @@ def init():
                 logging.warning("⚠️ queue_url doesn't look like full URL: %s", queue_url)
 
         initialized = True
-        logging.info("✅ Initialized: endpoint=%s, topic=%s, table=%s, queue=%s, s3_bucket=%s, s3_key=%s",
-                     sageMakerEndpoint, topicArn, tableName, queue_url, s3_bucket, s3_key)
+        logging.info(
+            "✅ Initialized: endpoint=%s, topic=%s, table=%s, queue=%s, s3_bucket=%s, s3_key=%s",
+            sageMakerEndpoint,
+            topicArn,
+            tableName,
+            queue_url,
+            s3_bucket,
+            s3_key,
+        )
     except Exception:
         logging.exception("❌ Initialization failed")
         time.sleep(10)
+
 
 def get_fcm_tokens(user_sub: str):
     with tracer.start_as_current_span("ddb.get_fcm_tokens") as span:
@@ -230,8 +269,11 @@ def get_fcm_tokens(user_sub: str):
             tokens = [t["S"] for t in resp["Item"]["fcmTokens"]["L"]]
         return tokens
 
+
 def invoke_sagemaker(endpoint: str, features):
-    with tracer.start_as_current_span("sagemaker.invoke_endpoint") as span, SM_INVOKE_SECONDS.time():
+    with tracer.start_as_current_span(
+        "sagemaker.invoke_endpoint"
+    ) as span, SM_INVOKE_SECONDS.time():
         span.set_attribute("sm.endpoint", endpoint)
         response = sagemaker_client.invoke_endpoint(
             EndpointName=endpoint,
@@ -246,32 +288,39 @@ def invoke_sagemaker(endpoint: str, features):
             span.set_status(Status(StatusCode.ERROR, str(e)))
             raise
 
-    with tracer.start_as_current_span("s3.append_features") as span, S3_APPEND_SECONDS.time():
+    with tracer.start_as_current_span(
+        "s3.append_features"
+    ) as span, S3_APPEND_SECONDS.time():
         span.set_attribute("s3.bucket", s3_bucket or "")
         span.set_attribute("s3.key", s3_key or "")
         try:
             try:
                 obj = s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
-                df_existing = pd.read_csv(io.BytesIO(obj["Body"].read()), header=None, dtype=str)
+                df_existing = pd.read_csv(
+                    io.BytesIO(obj["Body"].read()), header=None, dtype=str
+                )
             except s3_client.exceptions.NoSuchKey:
                 df_existing = pd.DataFrame()
 
             prediction = [result.get("prediction")]
-            
+
             features = features + prediction
             features[:3] = [float(x) for x in features[:3]]
             logging.info(f"✅ Features + Prediction: {features}")
-            
+
             df_new = pd.DataFrame([features])
             df_total = pd.concat([df_existing, df_new], ignore_index=True)
 
             csv_buffer = io.StringIO()
             df_total.to_csv(csv_buffer, header=False, index=False)
-            s3_client.put_object(Bucket=s3_bucket, Key=s3_key, Body=csv_buffer.getvalue())
+            s3_client.put_object(
+                Bucket=s3_bucket, Key=s3_key, Body=csv_buffer.getvalue()
+            )
         except Exception as e:
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR, str(e)))
     return result
+
 
 def publish_sns(fcm_tokens):
     with tracer.start_as_current_span("sns.publish") as span:
@@ -279,9 +328,12 @@ def publish_sns(fcm_tokens):
         if not fcm_tokens:
             return
         # sns_client.publish(TopicArn=topicArn, Message=json.dumps({"fcmTokens": fcm_tokens}))
-        resp = sns_client.publish(TopicArn=topicArn, Message=json.dumps({"fcmTokens": fcm_tokens}))
+        resp = sns_client.publish(
+            TopicArn=topicArn, Message=json.dumps({"fcmTokens": fcm_tokens})
+        )
         logging.info("SNS publish done: MessageId=%s", resp.get("MessageId"))
         SNS_PUBLISH_TOTAL.inc()
+
 
 def receive_messages():
     with tracer.start_as_current_span("sqs.receive_messages") as span:
@@ -300,6 +352,7 @@ def receive_messages():
         span.set_attribute("sqs.messages", len(msgs))
         return msgs
 
+
 def delete_message(receipt_handle: str):
     with tracer.start_as_current_span("sqs.delete_message"):
         try:
@@ -307,10 +360,15 @@ def delete_message(receipt_handle: str):
         except Exception:
             logging.exception("❌ Failed to delete message")
 
+
 def process_message(record: dict):
     with tracer.start_as_current_span("biz.process_message") as span:
         try:
-            body = json.loads(record["Body"]) if isinstance(record.get("Body"), str) else record["Body"]
+            body = (
+                json.loads(record["Body"])
+                if isinstance(record.get("Body"), str)
+                else record["Body"]
+            )
         except Exception as e:
             logging.exception("❌ Invalid SQS message body")
             MSG_PROCESSED_TOTAL.labels(result="error").inc()
@@ -319,7 +377,11 @@ def process_message(record: dict):
             return False
 
         try:
-            message = json.loads(body.get("Message", body)) if isinstance(body.get("Message", body), str) else body.get("Message", body)
+            message = (
+                json.loads(body.get("Message", body))
+                if isinstance(body.get("Message", body), str)
+                else body.get("Message", body)
+            )
         except Exception as e:
             logging.exception("❌ Invalid nested message (SNS-style)")
             MSG_PROCESSED_TOTAL.labels(result="error").inc()
@@ -351,9 +413,12 @@ def process_message(record: dict):
             span.set_status(Status(StatusCode.ERROR, str(e)))
             return False
 
+
 # ─────────────────────────── 메인 루프 ───────────────────────────
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    )
 
     # 1) 트레이싱 먼저 켠다 (X-Ray로 보내기 위한 필수 단계)
     _init_tracing()
@@ -387,7 +452,9 @@ def main():
             for msg in messages:
                 logging.info(f"➡️ Processing message ID: {msg.get('MessageId','')}")
                 ctx = _extract_ctx_from_sqs(msg)
-                with tracer.start_as_current_span("sqs.process_message", context=ctx) as span:
+                with tracer.start_as_current_span(
+                    "sqs.process_message", context=ctx
+                ) as span:
                     span.set_attribute("sqs.message_id", msg.get("MessageId", ""))
                     ok = process_message(msg)
                     logging.info(f"✅ Message processed, success={ok}")
@@ -402,6 +469,7 @@ def main():
             time.sleep(5)
 
     logging.info("🔚 Exiting main loop.")
+
 
 if __name__ == "__main__":
     main()
