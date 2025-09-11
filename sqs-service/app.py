@@ -1,4 +1,5 @@
-
+import whatap
+whatap.agent()  # ← 최우선 초기화
 # app.py
 import os
 import json
