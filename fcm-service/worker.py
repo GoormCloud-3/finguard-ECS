@@ -272,9 +272,12 @@ def poll_sqs_once() -> int:
             logger.error(f"SQS 수신 오류: {e}")
             FCM_ERRORS.inc()
             return processed
+        logging.info("📨 SQS 메시지 수신 ,,,")
 
         msgs = res.get("Messages", [])
         SQS_POLL_SIZE.observe(len(msgs))
+        logging.info(f"📬 수신된 메시지: {len(msgs)}개")
+        logging.info("메세지 내용 : %s", msgs)
 
         if not msgs:
             logger.info("📭 대기열에 메시지가 없습니다.")
@@ -287,49 +290,49 @@ def poll_sqs_once() -> int:
                     try:
                         payload = parse_payload(msg.get("Body", "{}"))
 
-                        single_token = payload.get("token") or payload.get("fcmToken")
-                        topic = payload.get("topic")
-                        condition = payload.get("condition")
-                        masked_single = mask_token(single_token)
+                        # ★ 우리가 실제로 보내는 페이로드: {"fcmTokens": [...]}
+                        tokens = payload.get("fcmTokens")
+                        if not isinstance(tokens, list):
+                            logger.warning("⚠️ payload에 fcmTokens가 없거나 리스트가 아님. keys=%s", list(payload.keys()))
+                            FCM_ERRORS.inc()
+                            # 삭제하지 않음 → 재시도/조사 가능
+                            continue
 
-                        span.set_attribute("fcm.has_token", bool(single_token))
-                        span.set_attribute("fcm.has_topic", bool(topic))
-                        span.set_attribute("fcm.has_condition", bool(condition))
+                        # 문자열 토큰만 골라 정제
+                        valid_tokens = [t.strip() for t in tokens if isinstance(t, str) and t.strip()]
+                        if not valid_tokens:
+                            logger.warning("⚠️ 유효한 fcmTokens가 없음 (원본 개수=%d)", len(tokens))
+                            FCM_ERRORS.inc()
+                            continue
 
+                        # 제목/본문/데이터 등은 기존 헬퍼로 구성
                         msg_kwargs = build_fcm_parts(payload)
 
-                        if single_token:
-                            with tracer.start_as_current_span("fcm.send_single") as sspan, FCM_SEND_SEC.time():
-                                sspan.set_attribute("fcm.mode", "single")
-                                sspan.set_attribute("fcm.token_masked", masked_single or "")
-                                messaging.send(messaging.Message(**msg_kwargs, token=single_token))
-                            FCM_PROCESSED.labels(mode="single").inc()
+                        sent, failed = 0, 0
+                        for tk in valid_tokens:
+                            try:
+                                with tracer.start_as_current_span("fcm.send_single") as sspan, FCM_SEND_SEC.time():
+                                    sspan.set_attribute("fcm.mode", "single")
+                                    sspan.set_attribute("fcm.token_masked", mask_token(tk) or "")
+                                    messaging.send(messaging.Message(**msg_kwargs, token=tk))
+                                sent += 1
+                            except Exception as e:
+                                failed += 1
+                                logger.error("❌ FCM 전송 실패(token=%s): %s", mask_token(tk), e)
+                                FCM_ERRORS.inc()
 
-                        elif topic:
-                            with tracer.start_as_current_span("fcm.send_topic") as sspan, FCM_SEND_SEC.time():
-                                sspan.set_attribute("fcm.mode", "topic")
-                                sspan.set_attribute("fcm.topic", topic)
-                                messaging.send(messaging.Message(**msg_kwargs, topic=topic))
-                            FCM_PROCESSED.labels(mode="topic").inc()
+                        if sent:
+                            FCM_PROCESSED.labels(mode="single").inc(sent)
+                        logger.info("✅ FCM 전송 완료: sent=%d, failed=%d", sent, failed)
 
-                        elif condition:
-                            with tracer.start_as_current_span("fcm.send_condition") as sspan, FCM_SEND_SEC.time():
-                                sspan.set_attribute("fcm.mode", "condition")
-                                sspan.set_attribute("fcm.condition", condition)
-                                messaging.send(messaging.Message(**msg_kwargs, condition=condition))
-                            FCM_PROCESSED.labels(mode="condition").inc()
-
-                        else:
-                            raise ValueError("Invalid payload: token | topic | condition 중 하나는 필요")
-
+                        # 성공/실패와 무관하게 일단 소비하고 상위 재발행 전략은 퍼블리셔에서 처리
                         with tracer.start_as_current_span("sqs.delete") as dspan:
                             dspan.set_attribute("sqs.queue", QUEUE_URL.split("/")[-1])
                             sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=msg["ReceiptHandle"])
-
                         processed += 1
 
                     except Exception as e:
-                        logger.error(f"❌ 메시지 처리 오류 (msgId={msg.get('MessageId')}): {e}")
+                        logger.error("❌ 메시지 처리 오류 (msgId=%s): %s", msg.get("MessageId"), e)
                         FCM_ERRORS.inc()
                         span.record_exception(e)
                         span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -338,6 +341,7 @@ def poll_sqs_once() -> int:
                 detach(token_ctx)
 
     return processed
+
 
 # ---------- run ----------
 BACKOFF_BASE = int(os.getenv("BACKOFF_BASE", "2"))
