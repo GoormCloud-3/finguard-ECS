@@ -1,6 +1,7 @@
 {
   "family": "fcm-task",
   "networkMode": "awsvpc",
+  "enableExecuteCommand": true,
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
   "memory": "2048",
@@ -61,7 +62,7 @@
       ],
 
       "environment": [
-        { "name": "WHATAP_HOSTS", "value": "13.124.11.223/13.209.172.35" },
+        { "name": "WHATAP_HOSTS", "value": "13.124.11.223,13.209.172.35" },
         { "name": "WHATAP_APP_NAME", "value": "fcm-service" },
         { "name": "WHATAP_PROCESS_NAME", "value": "python" },
 
