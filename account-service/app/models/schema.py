@@ -1,7 +1,7 @@
 # models/schema.py
 from pydantic import BaseModel
 from typing import List, Optional
-
+from datetime import date, time
 
 class CreateAccountRequest(BaseModel):
     userSub: str
@@ -11,8 +11,8 @@ class CreateAccountRequest(BaseModel):
 
 class TransactionItem(BaseModel):
     id: str
-    date: Optional[str]
-    time: Optional[str]
+    date: Optional[date]   # <-- str 대신 date
+    time: Optional[time]   # <-- str 대신 time
     description: str
     amount: float
     type: str  # "credit" | "debit"
