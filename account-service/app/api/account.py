@@ -27,30 +27,6 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 
-# Time for transaction
-def _time_hhmmss(val):
-    """HH:MM:SS로 반환 (time/datetime/str 모두 허용)"""
-    if not val:
-        return None
-    if isinstance(val, (datetime, dtime)):
-        return val.strftime("%H:%M:%S")
-    if isinstance(val, str):
-        s = val.strip()
-        # ISO 형식 우선 시도
-        try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00")).strftime("%H:%M:%S")
-        except ValueError:
-            pass
-        # 'HH:MM' 또는 'HH:MM:SS' 직접 파싱
-        try:
-            h, m, *rest = s.split(":")
-            sec = int(rest[0]) if rest else 0
-            return f"{int(h):02d}:{int(m):02d}:{sec:02d}"
-        except Exception:
-            return None
-    return None
-
-
 # ── Prometheus
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
